@@ -12,8 +12,11 @@ import threading
 import queue
 import random
 import numpy as np
-import cv2
-from typing import Any, Optional, List, Dict, Protocol, TYPE_CHECKING
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+from typing import Any, Optional, List, Dict, Tuple, Protocol, TYPE_CHECKING
 from PIL import Image
 from src.utils.resource_utils import ensure_directory
 from src.core.logging_utils import QueueHandler
@@ -21,6 +24,7 @@ from src.core.json_io import write_json_atomic
 from src.core.run_control import PauseRequested, StopRequested
 from src.config.paths import get_app_root
 
+from src.device.wgc import WgcCapture
 if TYPE_CHECKING:
     from src.game.game_manager import GameManager
 
@@ -130,6 +134,10 @@ class DeviceState:
         # 设置日志器（必须在其他初始化之前）
         self.logger = self._setup_logger()
 
+        self.wgc_capture: Optional[WgcCapture] = None
+        self.screenshot_method: str = "wgc"
+        self.screenshot_deep_color: bool = False
+
         # 初始化截图方法选择
         self._init_screenshot_method()
 
@@ -235,27 +243,33 @@ class DeviceState:
     def _init_screenshot_method(self):
         """初始化截图方法选择，只在程序启动时执行一次"""
         try:
-            # 从设备配置中获取screenshot_deep_color值，默认为False
-            screenshot_deep_color = self.device_config.get(
-                "screenshot_deep_color", False
+            self.screenshot_method = str(
+                self.device_config.get("screenshot_method", "wgc")
+            ).lower()
+            self.screenshot_deep_color = bool(
+                self.device_config.get("screenshot_deep_color", False)
             )
 
-            if screenshot_deep_color:
-                self.logger.info("初始化截图方法: 使用深色截图方法")
+            if self.screenshot_method == "wgc":
+                self.logger.info(
+                    "初始化截图方法: 使用 WGC 截图方法 (Windows.Graphics.Capture, 保持720p)"
+                )
+                self._screenshot_method = self.take_screenshot_wgc
+            elif self.screenshot_deep_color:
+                self.logger.info("初始化截图方法: 使用 ADB 深色截图方法 (Gamma增强)")
                 self._screenshot_method = self.take_screenshot_MuMugblobe
             else:
-                self.logger.info("初始化截图方法: 使用普通截图方法")
+                self.logger.info("初始化截图方法: 使用 ADB 普通截图方法")
                 self._screenshot_method = self.take_screenshot_normal
 
         except Exception as e:
             self.logger.error(f"读取设备配置失败，使用默认截图方法: {str(e)}")
-            self._screenshot_method = self.take_screenshot_normal
+            self._screenshot_method = self.take_screenshot_wgc
 
     def _setup_logger(self) -> logging.Logger:
         """为每个设备创建独立的日志器"""
         logger = logging.getLogger(f"Device-{self.serial}")
         logger.setLevel(logging.INFO)
-
         # 避免重复添加处理器
         if logger.handlers:
             return logger
@@ -604,6 +618,55 @@ class DeviceState:
                 return
             time.sleep(min(float(step), remain))
 
+    def wait_for_screen_stable(
+        self,
+        timeout: float = 10.0,
+        threshold: float = 0.93,
+        interval: float = 0.2,
+        max_checks: int = 2,
+        desc: str = "",
+    ) -> bool:
+        """等待画面稳定（参考 auto_szb 的 SSIM 稳定度检测机制）。"""
+        from src.utils.stillness_detector import wait_for_screen_stable as _wait_for_screen_stable
+        return _wait_for_screen_stable(
+            self,
+            timeout=timeout,
+            threshold=threshold,
+            interval=interval,
+            max_checks=max_checks,
+            desc=desc,
+        )
+
+    def wait_for_stillness(
+        self,
+        timeout: float = 10.0,
+        *,
+        min_wait: float = 0.0,
+        motion_timeout: float = 0.8,
+        wait_for_motion: bool = False,
+        poll_interval: Optional[float] = None,
+        consecutive_stable: int = 2,
+        threshold: float = 0.93,
+        pixel_threshold: int = 18,
+        roi: Optional[Tuple[int, int, int, int]] = None,
+        desc: str = "",
+    ) -> bool:
+        """等待画面动画结束并达到静止（底层由 SSIM 稳定度算法驱动）。"""
+        from src.utils.stillness_detector import wait_for_stillness as _wait_for_stillness
+        return _wait_for_stillness(
+            self,
+            timeout=timeout,
+            min_wait=min_wait,
+            motion_timeout=motion_timeout,
+            wait_for_motion=wait_for_motion,
+            poll_interval=poll_interval,
+            consecutive_stable=consecutive_stable,
+            threshold=threshold,
+            pixel_threshold=pixel_threshold,
+            roi=roi,
+            desc=desc,
+        )
+
     def wait_while_paused(self, *, poll: float = 0.2) -> None:
         """阻塞至恢复，然后应用恢复策略。"""
 
@@ -724,13 +787,8 @@ class DeviceState:
                     img_bgr = img_array
 
                 # Gamma校正（替代原来的 +43 亮度增强）
-                # gamma > 1 使图像变暗，gamma < 1 使图像变亮
-                # 使用 inv_gamma = 1/2.0 = 0.5 来提亮图像
                 gamma = 2.0
                 inv_gamma = 1.0 / gamma
-
-                # 构建查找表（LUT）：256个预计算值，避免对每个像素计算
-                # 使用 np.clip 确保值域在 [0, 255]，np.round 保证正确的四舍五入
                 lut = np.clip(
                     np.round(np.power(np.arange(256) / 255.0, inv_gamma) * 255.0),
                     0,
@@ -738,16 +796,55 @@ class DeviceState:
                 ).astype(np.uint8)
 
                 img_brightened = cv2.LUT(img_bgr, lut)
-
-                # 转换回RGB格式
                 img_rgb = cv2.cvtColor(img_brightened, cv2.COLOR_BGR2RGB)
-
                 return Image.fromarray(img_rgb)
             else:
                 return None
         except Exception as e:
             self.logger.error(f"截图失败: {str(e)}")
             return None
+
+    def take_screenshot_wgc(self) -> Optional[Any]:
+        """通过 WGC (Windows.Graphics.Capture) 获取 720p 设备截图。"""
+        if self.wgc_capture is None:
+            wgc_title = self.device_config.get("wgc_window_title")
+            target_hwnd = int(self.device_config.get("target_hwnd", 0) or 0)
+            self.wgc_capture = WgcCapture(
+                target_hwnd=target_hwnd,
+                title_keyword=wgc_title,
+                logger_instance=self.logger,
+            )
+            started = self.wgc_capture.start()
+            if not started:
+                self.logger.warning("[WGC] 未能定位目标游戏窗口，平滑回退到 ADB 截图")
+                if self.screenshot_deep_color:
+                    return self.take_screenshot_MuMugblobe()
+                return self.take_screenshot_normal()
+
+        screenshot = self.wgc_capture.get_screenshot(
+            timeout=0.8,
+            deep_color=self.screenshot_deep_color,
+        )
+        if screenshot is not None:
+            self.last_screenshot = screenshot
+            return screenshot
+
+        # 若 WGC 暂未获取到帧（例如窗口被遮挡或最小化），回退到 ADB 截图兜底
+        if self.adb_device is not None:
+            if self.screenshot_deep_color:
+                return self.take_screenshot_MuMugblobe()
+            return self.take_screenshot_normal()
+
+        return None
+
+    def close_wgc(self) -> None:
+        """关闭并释放 WGC 捕获资源。"""
+        if self.wgc_capture is not None:
+            try:
+                self.wgc_capture.close()
+            except Exception:
+                pass
+            self.wgc_capture = None
 
     def save_screenshot(self, screenshot, scene="general") -> Optional[str]:
         """保存截图并添加场景标签"""

@@ -236,7 +236,7 @@ def migrate_strategy_effects_to_ops(config: Dict[str, Any]) -> bool:
                 new_steps = [dict(s) for s in steps if isinstance(s, dict)]
 
                 # 保留旧进化语义：先执行动作或目标选择，再执行选项选择。
-            if str(trigger) in ("on_evolve", "on_super_evolve"):
+            if str(trigger) in ("on_evolve", "on_super_evolve", "on_evolve_bridge", "on_super_evolve_bridge"):
                 reordered = [s for s in new_steps if not _is_op(s, "select_option")] + [
                     s for s in new_steps if _is_op(s, "select_option")
                 ]
@@ -263,7 +263,7 @@ def migrate_strategy_effects_to_ops(config: Dict[str, Any]) -> bool:
                     del card_eff[trigger]
                 changed = True
 
-    # 运行时不再让超进化回退到普通进化；兼容逻辑只在迁移边界补齐缺失触发器。
+        # 运行时不再让超进化回退到普通进化；兼容逻辑只在迁移边界补齐缺失触发器。
         try:
             on_evolve_steps = card_eff.get("on_evolve")
             on_super_steps = card_eff.get("on_super_evolve")
@@ -276,6 +276,19 @@ def migrate_strategy_effects_to_ops(config: Dict[str, Any]) -> bool:
                 )
             ):
                 card_eff["on_super_evolve"] = copy.deepcopy(on_evolve_steps)
+                changed = True
+
+            on_evolve_b_steps = card_eff.get("on_evolve_bridge")
+            on_super_b_steps = card_eff.get("on_super_evolve_bridge")
+            if (
+                isinstance(on_evolve_b_steps, list)
+                and on_evolve_b_steps
+                and (
+                    not isinstance(on_super_b_steps, list)
+                    or not on_super_b_steps
+                )
+            ):
+                card_eff["on_super_evolve_bridge"] = copy.deepcopy(on_evolve_b_steps)
                 changed = True
         except Exception:
             pass

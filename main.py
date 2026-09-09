@@ -24,8 +24,30 @@ command_queue = queue.Queue()
 # 全局日志队列
 log_queue = queue.Queue()
 
+def check_and_elevate():
+    """若非管理员，自动请求提升为管理员权限以穿透 Windows UIPI 控制端游。"""
+    try:
+        import ctypes
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            script = os.path.abspath(sys.argv[0])
+            params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                sys.executable,
+                f'"{script}" {params}'.strip(),
+                None,
+                1,
+            )
+            if int(ret) > 32:
+                sys.exit(0)
+    except Exception:
+        pass
+
+
 def main(enable_command_listener=True):
     """主函数"""
+    check_and_elevate()
     run_cli(
         enable_command_listener=enable_command_listener,
         command_queue=command_queue,

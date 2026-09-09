@@ -21,23 +21,26 @@ class AttackPhase:
             allow_cached_fallback=False,
         )
 
-    # 严格扫描完全无结果时，才把缓存随从作为最后回退。
+        # 严格扫描完全无结果时，仅在视觉模式下把缓存随从作为最后回退；使用内存检测时直接以内存为准。
         if not our_followers:
             try:
-                fm = getattr(self.actions, "follower_manager", None)
-                is_fresh = bool(
-                    fm is not None
-                    and hasattr(fm, "is_fresh")
-                    and fm.is_fresh(max_age_seconds=0.8)
-                )
-                if is_fresh and fm is not None and hasattr(fm, "get_positions_sorted"):
-                    our_followers = fm.get_positions_sorted(sort_desc=True)
-                elif is_fresh and fm is not None:
-                    our_followers = sorted(
-                        (fm.get_positions() or []), key=lambda f: int(f[0]), reverse=True
+                from src.bridge.helper import get_memory_adapter
+                mem_adapter = get_memory_adapter()
+                if not (mem_adapter and mem_adapter.is_available()):
+                    fm = getattr(self.actions, "follower_manager", None)
+                    is_fresh = bool(
+                        fm is not None
+                        and hasattr(fm, "is_fresh")
+                        and fm.is_fresh(max_age_seconds=0.8)
                     )
-                else:
-                    our_followers = []
+                    if is_fresh and fm is not None and hasattr(fm, "get_positions_sorted"):
+                        our_followers = fm.get_positions_sorted(sort_desc=True)
+                    elif is_fresh and fm is not None:
+                        our_followers = sorted(
+                            (fm.get_positions() or []), key=lambda f: int(f[0]), reverse=True
+                        )
+                    else:
+                        our_followers = []
             except Exception:
                 our_followers = []
 

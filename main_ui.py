@@ -22,9 +22,30 @@ if _project_root not in sys.path:
 from src.app.bootstrap import run_gui
 
 
-def main():
-    sys.exit(run_gui(sys.argv))
+def check_and_elevate():
+    """若非管理员，自动请求提升为管理员权限以穿透 Windows UIPI 控制端游。"""
+    try:
+        import ctypes
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            script = os.path.abspath(sys.argv[0])
+            params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                sys.executable,
+                f'"{script}" {params}'.strip(),
+                None,
+                1,
+            )
+            if int(ret) > 32:
+                sys.exit(0)
+    except Exception:
+        pass
 
+
+def main():
+    check_and_elevate()
+    sys.exit(run_gui(sys.argv))
 
 if __name__ == "__main__":
     main()

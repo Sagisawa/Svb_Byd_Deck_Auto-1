@@ -637,7 +637,7 @@ class GameActions:
             return
         try:
             # 等待召唤或效果动画稳定后，再标记随从来源。
-            self.device_state.sleep(2.0)
+            self.device_state.wait_for_screen_stable(timeout=6.0, desc="随从召唤与效果动画")
             followers = self._refresh_our_followers(
                 sort_desc=True,
                 extra_shots=0,
@@ -654,17 +654,28 @@ class GameActions:
     @staticmethod
     def _enemy_hp_value(enemy_follower) -> Optional[int]:
         try:
+            # 护符不可作为血量攻击目标
+            if len(enemy_follower) > 2 and str(enemy_follower[2]) == "amulet":
+                return None
+            if len(enemy_follower) > 5 and bool(enemy_follower[5]):
+                return None
             hp = enemy_follower[3]
         except Exception:
             return None
         if isinstance(hp, int):
-            return int(hp)
+            return int(hp) if int(hp) > 0 else None
         if isinstance(hp, str) and hp.isdigit():
-            return int(hp)
+            val = int(hp)
+            return val if val > 0 else None
         return None
 
     def _fallback_pick_enemy_target(self, enemy_followers, *, ward_targets=None, ward_only=False):
-        followers = list(enemy_followers or [])
+        # 护符不可被攻击，仅筛选敌方随从作为有效目标
+        followers = [
+            f for f in list(enemy_followers or [])
+            if not (len(f) > 2 and str(f[2]) == "amulet")
+            and not (len(f) > 5 and bool(f[5]))
+        ]
         if not followers:
             return None, {"mode": "fallback_no_enemy"}
 
@@ -738,8 +749,9 @@ class GameActions:
             from src.game.effects import EffectEngine as _EffectEngine
             from src.game.effects import FollowerContext as _FollowerContext
 
-            attack_effects_enabled = _has_any_eff(
-                getattr(self.device_state, "config", None), trigger="on_attack"
+            attack_effects_enabled = bool(
+                _has_any_eff(getattr(self.device_state, "config", None), trigger="on_attack")
+                or _has_any_eff(getattr(self.device_state, "config", None), trigger="on_attack_bridge")
             )
         except Exception:
             attack_effects_enabled = False
@@ -781,9 +793,22 @@ class GameActions:
                 source_uid=source_uid,
             )
 
-            steps = _get_eff_steps(
-                getattr(self.device_state, "config", None), card_name=effect_key, trigger="on_attack"
-            )
+            from src.bridge.snapshot_adapter import is_bridge_mode_active
+            is_bridge = is_bridge_mode_active(self.device_state)
+
+            used_trigger = "on_attack"
+            steps = None
+            if is_bridge:
+                steps = _get_eff_steps(
+                    getattr(self.device_state, "config", None), card_name=effect_key, trigger="on_attack_bridge"
+                )
+                if steps:
+                    used_trigger = "on_attack_bridge"
+            if not steps:
+                steps = _get_eff_steps(
+                    getattr(self.device_state, "config", None), card_name=effect_key, trigger="on_attack"
+                )
+
             ops = _norm_ops(steps)
             if not ops:
                 return
@@ -799,7 +824,7 @@ class GameActions:
                 pre_action_our_follower_count=len(list(all_followers or [])),
                 attack_source_pos=pos_xy,
             )
-            _EffectEngine.run_ops(ops, ctx=ctx, trigger_id="on_attack")
+            _EffectEngine.run_ops(ops, ctx=ctx, trigger_id=used_trigger)
 
         shield_targets = []
 
@@ -810,6 +835,14 @@ class GameActions:
             "enemy_dirty": True,
             "ward_dirty": False,
         }
+
+        def _is_mem_active() -> bool:
+            try:
+                from src.bridge.helper import get_memory_adapter
+                adapter = get_memory_adapter()
+                return bool(adapter and adapter.is_available())
+            except Exception:
+                return False
 
         def _strict_refresh_attack_followers(*, with_names: bool = False, retries: int = 1):
             """攻击关键路径扫描：连续扫描 3 帧并重试，不回退到过期缓存。"""
@@ -829,6 +862,18 @@ class GameActions:
             _named_scan_cache["ts"] = 0.0
 
         def _get_named_followers_cached():
+            try:
+                from src.bridge.helper import get_memory_adapter
+                mem_adapter = get_memory_adapter()
+                if mem_adapter and mem_adapter.is_available():
+                    mem_ours = mem_adapter.get_our_followers()
+                    if mem_ours is not None:
+                        named_followers = sorted(list(mem_ours), key=lambda f: int(f[0]) if len(f) > 0 else 0, reverse=True)
+                        self._runtime_sync_ours(named_followers)
+                        return named_followers
+            except Exception:
+                pass
+
             now = time.time()
             cached = _named_scan_cache.get("followers")
             cache_ts = float(_named_scan_cache.get("ts", 0.0) or 0.0)
@@ -960,6 +1005,19 @@ class GameActions:
             return False
 
         def _scan_enemy_followers_synced(*, ward_positions: Optional[Sequence[Sequence[Any]]] = None):
+            # 优先通过内存检测直接读取实时敌方随从
+            try:
+                from src.bridge.helper import get_memory_adapter
+                mem_adapter = get_memory_adapter()
+                if mem_adapter and mem_adapter.is_available():
+                    mem_enemies = mem_adapter.get_enemy_followers()
+                    if mem_enemies is not None:
+                        res = list(mem_enemies)
+                        self._runtime_sync_enemy(res, ward_targets=list(ward_positions or []))
+                        return res
+            except Exception:
+                pass
+
             shots: List[List[Tuple[Any, Any, Any, Any]]] = []
             total_shots = 3
 
@@ -1009,6 +1067,21 @@ class GameActions:
             return list(enemy_followers or [])
 
         def _get_enemy_followers_cached(*, force: bool = False, ward_positions=None):
+            # 内存检测模式下不使用缓存复用法，每次直接从内存读取最新敌方随从
+            try:
+                from src.bridge.helper import get_memory_adapter
+                mem_adapter = get_memory_adapter()
+                if mem_adapter and mem_adapter.is_available():
+                    mem_enemies = mem_adapter.get_enemy_followers()
+                    if mem_enemies is not None:
+                        res = list(mem_enemies)
+                        attack_cache["enemy"] = res
+                        attack_cache["enemy_dirty"] = False
+                        self._runtime_sync_enemy(res, ward_targets=list(ward_positions or []))
+                        return res
+            except Exception:
+                pass
+
             if force or attack_cache.get("enemy_dirty") or attack_cache.get("enemy") is None:
                 refreshed = _scan_enemy_followers_synced(ward_positions=ward_positions)
                 attack_cache["enemy"] = list(refreshed or [])
@@ -1016,6 +1089,20 @@ class GameActions:
             return list(attack_cache.get("enemy") or [])
 
         def _get_ward_targets_cached(*, force: bool = False):
+            # 内存检测模式下不使用缓存复用法，每次直接从内存读取最新守护目标
+            try:
+                from src.bridge.helper import get_memory_adapter
+                mem_adapter = get_memory_adapter()
+                if mem_adapter and mem_adapter.is_available():
+                    mem_wards = mem_adapter.get_shield_targets()
+                    if mem_wards is not None:
+                        res = list(mem_wards)
+                        attack_cache["ward"] = res
+                        attack_cache["ward_dirty"] = False
+                        return res
+            except Exception:
+                pass
+
             if force or attack_cache.get("ward_dirty") or attack_cache.get("ward") is None:
                 attack_cache["ward"] = list(self._scan_shield_targets() or [])
                 attack_cache["ward_dirty"] = False
@@ -1544,7 +1631,7 @@ class GameActions:
                     shield_y,
                     duration=random.uniform(*settings.get_human_like_drag_duration_range()),
                 )
-                self.device_state.sleep(ATTACK_SETTLE_SLEEP_COMBAT)
+                self.device_state.wait_for_screen_stable(timeout=10.0, desc="护盾随从对撞攻击结算")
                 _run_on_attack_effects(selected_follower_name, selected_follower)
                 used_cnt, cap_cnt, remain_cnt = _consume_attack_use(
                     selected_follower,
@@ -1574,42 +1661,87 @@ class GameActions:
                         f"target_dead={combat.get('target_dead')}"
                     )
 
-                if not _has_attack_followers(current_followers):
-                    self.device_state.logger.info("攻击后没有可用的突进/疾驰随从，停止破盾")
-                    return False, list(current_followers or []), list(current_shield_targets or [])
+                if _is_mem_active():
+                    # 内存模式：立即从内存读取最新护盾与敌方场面，精确掌握对战结算结果
+                    _mark_enemy_board_dirty()
+                    current_shield_targets = _get_ward_targets_cached(force=True)
+                    enemy_after = _get_enemy_followers_cached(force=True, ward_positions=current_shield_targets)
 
-                # 仍有可攻击随从时再重扫更新（避免末次攻击后的无效重扫）
-                current_followers = list(_strict_refresh_attack_followers(with_names=True, retries=0) or [])
-                _invalidate_named_scan_cache()
-                self._runtime_sync_ours(current_followers)
-                _mark_enemy_board_dirty()
+                    # 立即从内存读取我方场上最新随从真实状态（准确反映存活、攻击次数消耗以及攻击/亡语衍生随从）
+                    current_followers = list(_strict_refresh_attack_followers(with_names=True, retries=0) or [])
+                    _invalidate_named_scan_cache()
+                    self._runtime_sync_ours(current_followers)
 
-                # 重新扫描护盾，检查当前护盾是否还在
-                current_shield_targets = _get_ward_targets_cached(force=True)
-                enemy_after = _get_enemy_followers_cached(force=True, ward_positions=current_shield_targets)
+                    # 追踪目标攻击有效性（防挂机与黑名单）
+                    progressed = _target_progressed(
+                        target_xy=(shield_x, shield_y),
+                        enemy_before=enemy_before,
+                        enemy_after=enemy_after,
+                        ward_before=ward_before,
+                        ward_after=current_shield_targets,
+                    )
+                    target_bucket = _target_bucket((shield_x, shield_y))
+                    if progressed:
+                        if target_bucket is not None:
+                            ward_target_fail_streak.pop(int(target_bucket), None)
+                    else:
+                        if target_bucket is not None:
+                            streak = int(ward_target_fail_streak.get(int(target_bucket), 0) or 0) + 1
+                            ward_target_fail_streak[int(target_bucket)] = int(streak)
+                            if streak >= int(NO_PROGRESS_BLACKLIST_THRESHOLD):
+                                if int(target_bucket) not in ward_target_blacklist:
+                                    ward_target_blacklist.add(int(target_bucket))
+                                    self.device_state.logger.warning(
+                                        "护盾目标连续2次攻击无变化，加入黑名单 "
+                                        f"bucket={int(target_bucket)} x={int(shield_x)}"
+                                    )
 
-                progressed = _target_progressed(
-                    target_xy=(shield_x, shield_y),
-                    enemy_before=enemy_before,
-                    enemy_after=enemy_after,
-                    ward_before=ward_before,
-                    ward_after=current_shield_targets,
-                )
-                target_bucket = _target_bucket((shield_x, shield_y))
-                if progressed:
-                    if target_bucket is not None:
-                        ward_target_fail_streak.pop(int(target_bucket), None)
+                    # 判定1：如果内存中护盾已被消灭，判定破盾成功，退出破盾循环以进入后续攻击
+                    if not current_shield_targets:
+                        self.device_state.logger.info("敌方护盾已被消灭，破盾成功")
+                        return True, list(current_followers or []), []
+
+                    # 判定2：护盾仍在时，检查内存中是否还有可用的突进/疾驰随从
+                    if not _has_attack_followers(current_followers):
+                        self.device_state.logger.info("攻击后内存检测无可用突进/疾驰随从，停止破盾")
+                        return False, list(current_followers or []), list(current_shield_targets or [])
                 else:
-                    if target_bucket is not None:
-                        streak = int(ward_target_fail_streak.get(int(target_bucket), 0) or 0) + 1
-                        ward_target_fail_streak[int(target_bucket)] = int(streak)
-                        if streak >= int(NO_PROGRESS_BLACKLIST_THRESHOLD):
-                            if int(target_bucket) not in ward_target_blacklist:
-                                ward_target_blacklist.add(int(target_bucket))
-                                self.device_state.logger.warning(
-                                    "护盾目标连续2次攻击无变化，加入黑名单 "
-                                    f"bucket={int(target_bucket)} x={int(shield_x)}"
-                                )
+                    if not _has_attack_followers(current_followers):
+                        self.device_state.logger.info("攻击后没有可用的突进/疾驰随从，停止破盾")
+                        return False, list(current_followers or []), list(current_shield_targets or [])
+
+                    # 仍有可攻击随从时再重扫更新（避免末次攻击后的无效重扫）
+                    current_followers = list(_strict_refresh_attack_followers(with_names=True, retries=0) or [])
+                    _invalidate_named_scan_cache()
+                    self._runtime_sync_ours(current_followers)
+                    _mark_enemy_board_dirty()
+
+                    # 重新扫描护盾，检查当前护盾是否还在
+                    current_shield_targets = _get_ward_targets_cached(force=True)
+                    enemy_after = _get_enemy_followers_cached(force=True, ward_positions=current_shield_targets)
+
+                    progressed = _target_progressed(
+                        target_xy=(shield_x, shield_y),
+                        enemy_before=enemy_before,
+                        enemy_after=enemy_after,
+                        ward_before=ward_before,
+                        ward_after=current_shield_targets,
+                    )
+                    target_bucket = _target_bucket((shield_x, shield_y))
+                    if progressed:
+                        if target_bucket is not None:
+                            ward_target_fail_streak.pop(int(target_bucket), None)
+                    else:
+                        if target_bucket is not None:
+                            streak = int(ward_target_fail_streak.get(int(target_bucket), 0) or 0) + 1
+                            ward_target_fail_streak[int(target_bucket)] = int(streak)
+                            if streak >= int(NO_PROGRESS_BLACKLIST_THRESHOLD):
+                                if int(target_bucket) not in ward_target_blacklist:
+                                    ward_target_blacklist.add(int(target_bucket))
+                                    self.device_state.logger.warning(
+                                        "护盾目标连续2次攻击无变化，加入黑名单 "
+                                        f"bucket={int(target_bucket)} x={int(shield_x)}"
+                                    )
 
                 self.device_state.sleep(0.2)
             
@@ -1690,7 +1822,7 @@ class GameActions:
                     duration=random.uniform(*settings.get_human_like_drag_duration_range()),
                 )
                 green_attack_count += 1
-                self.device_state.sleep(ATTACK_SETTLE_SLEEP_FACE)
+                self.device_state.wait_for_screen_stable(timeout=10.0, desc="主将直伤攻击结算")
 
                 _run_on_attack_effects(name, (x, y))
                 used_cnt, cap_cnt, remain_cnt = _consume_attack_use(
@@ -1716,6 +1848,12 @@ class GameActions:
                         f"同一随从可继续攻击: {used_cnt}/{cap_cnt}"
                     )
 
+                if _is_mem_active():
+                    # 内存模式：立即从内存读取最新我方随从状态
+                    current_followers = list(_strict_refresh_attack_followers(with_names=True, retries=0) or [])
+                    _invalidate_named_scan_cache()
+                    self._runtime_sync_ours(current_followers)
+
                 if not _has_attack_followers(current_followers, allowed_types=("green",)):
                     self.device_state.logger.info("疾驰随从已全部完成攻击")
                     break
@@ -1726,6 +1864,11 @@ class GameActions:
             current_followers: List[Tuple[Any, Any, Any, Any]],
         ) -> List[Tuple[Any, Any, Any, Any]]:
             # 疾驰打脸后，再由突进处理敌方随从。
+            if _is_mem_active():
+                current_followers = list(_strict_refresh_attack_followers(with_names=True, retries=0) or [])
+                _invalidate_named_scan_cache()
+                self._runtime_sync_ours(current_followers)
+
             enemy_present = bool(_get_enemy_followers_cached(force=False, ward_positions=None))
             max_yellow_attacks = int(max_attack_attempts)
             yellow_attack_count = 0
@@ -1805,7 +1948,7 @@ class GameActions:
                     duration=random.uniform(*settings.get_human_like_drag_duration_range()),
                 )
                 yellow_attack_count += 1
-                self.device_state.sleep(ATTACK_SETTLE_SLEEP_COMBAT)
+                self.device_state.wait_for_screen_stable(timeout=10.0, desc="随从对战攻击结算")
                 _run_on_attack_effects(selected_follower_name, selected_follower)
                 used_cnt, cap_cnt, remain_cnt = _consume_attack_use(
                     selected_follower,
@@ -1859,14 +2002,21 @@ class GameActions:
                                 )
 
                 enemy_present = bool(enemy_after)
+                if _is_mem_active():
+                    # 内存模式：立即从内存读取最新我方随从真实状态
+                    current_followers = list(_strict_refresh_attack_followers(with_names=True, retries=0) or [])
+                    _invalidate_named_scan_cache()
+                    self._runtime_sync_ours(current_followers)
+
                 if not _has_attack_followers(current_followers, allowed_types=("yellow",)):
                     self.device_state.logger.info("突进随从已全部完成攻击")
                     break
 
-                # 仍有突进随从可攻击时再重扫。
-                current_followers = list(_strict_refresh_attack_followers(with_names=True, retries=0) or [])
-                _invalidate_named_scan_cache()
-                self._runtime_sync_ours(current_followers)
+                # 仍有突进随从可攻击时再重扫（纯视觉模式回退）。
+                if not _is_mem_active():
+                    current_followers = list(_strict_refresh_attack_followers(with_names=True, retries=0) or [])
+                    _invalidate_named_scan_cache()
+                    self._runtime_sync_ours(current_followers)
 
             return list(current_followers or [])
 
@@ -1918,6 +2068,19 @@ class GameActions:
         return None, None
 
     def _is_enemy_board_empty_for_evolve(self) -> bool:
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                enemies = [
+                    e for e in (mem_adapter.get_enemy_followers() or [])
+                    if not (len(e) > 2 and str(e[2]) == "amulet")
+                    and not (len(e) > 5 and bool(e[5]))
+                ]
+                return len(enemies) == 0
+        except Exception:
+            pass
+
         cached_enemy_presence = getattr(self, "_cached_enemy_presence_for_evolve", None)
         if cached_enemy_presence is not None:
             return not bool(cached_enemy_presence)
@@ -1940,6 +2103,20 @@ class GameActions:
         name = str(follower_name or "")
         if not name:
             return False
+        try:
+            from src.bridge.snapshot_adapter import is_bridge_mode_active
+            if is_bridge_mode_active(self.device_state):
+                bridge_trigger = f"{trigger}_bridge"
+                from src.game.policy.effects import get_card_effect_steps
+                if get_card_effect_steps(runtime_cfg, card_name=name, trigger=bridge_trigger):
+                    return card_effect_has_op(
+                        runtime_cfg,
+                        card_name=name,
+                        trigger=bridge_trigger,
+                        op_id="disallow_empty_evolve",
+                    )
+        except Exception:
+            pass
         return card_effect_has_op(
             runtime_cfg,
             card_name=name,
@@ -2053,7 +2230,7 @@ class GameActions:
         if str(follower_type or "") not in {"yellow", "normal"}:
             return
 
-        self.device_state.sleep(1)
+        self.device_state.sleep(0.3)
         shield_targets = self._scan_shield_targets()
         if bool(shield_targets):
             return
@@ -2094,7 +2271,7 @@ class GameActions:
             self._mark_recent_attack_slot(pos)
         except Exception:
             pass
-        self.device_state.sleep(1)
+        self.device_state.wait_for_screen_stable(timeout=10.0, desc="超进化突进攻击结算")
         if follower_name:
             self.device_state.logger.info(f"超进化了[{follower_name}]并攻击了敌方较高血量随从")
         else:
@@ -2121,7 +2298,6 @@ class GameActions:
         center_x = int(max_loc[0]) + int(template_info["w"]) // 2
         center_y = int(max_loc[1]) + int(template_info["h"]) // 2
         self._require_u2_device().click(center_x, center_y)
-        self.device_state.sleep(0.4)
 
         if follower_name:
             special_ok = self._handle_evolve_special_action(
@@ -2134,7 +2310,7 @@ class GameActions:
             if not special_ok:
                 return False
 
-        self.device_state.sleep(4.8)
+        self.device_state.wait_for_screen_stable(timeout=10.0, desc="超进化动画")
         self.device_state.super_evolution_point -= 1
         if follower_name:
             if is_evolve_priority_card(follower_name, runtime_cfg):
@@ -2181,7 +2357,6 @@ class GameActions:
         center_x = int(max_loc[0]) + int(template_info["w"]) // 2
         center_y = int(max_loc[1]) + int(template_info["h"]) // 2
         self._require_u2_device().click(center_x, center_y)
-        self.device_state.sleep(0.4)
 
         if follower_name:
             special_ok = self._handle_evolve_special_action(
@@ -2194,7 +2369,7 @@ class GameActions:
             if not special_ok:
                 return False
 
-        self.device_state.sleep(4.8)
+        self.device_state.wait_for_screen_stable(timeout=10.0, desc="进化动画")
         self.device_state.evolution_point -= 1
         if follower_name:
             if is_evolve_priority_card(follower_name, runtime_cfg):
@@ -2215,7 +2390,21 @@ class GameActions:
 
     def perform_evolution_actions(self):
         """执行进化/超进化操作"""
-        all_followers = self._normalize_follower_rows(self.follower_manager.get_positions())
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                mem_ours = mem_adapter.get_our_followers()
+                if mem_ours is not None:
+                    all_followers = self._normalize_follower_rows(list(mem_ours))
+                    self.follower_manager.update_positions(all_followers)
+                else:
+                    all_followers = self._normalize_follower_rows(self.follower_manager.get_positions())
+            else:
+                all_followers = self._normalize_follower_rows(self.follower_manager.get_positions())
+        except Exception:
+            all_followers = self._normalize_follower_rows(self.follower_manager.get_positions())
+
         if not all_followers:
             self.device_state.logger.info("没有随从可进化")
             return
@@ -2246,7 +2435,7 @@ class GameActions:
 
             # 点击该位置
             self._require_u2_device().click(pos[0], pos[1])
-            self.device_state.sleep(0.3)  # 等待进化按钮出现
+            self.device_state.sleep(0.4)
 
             # 获取新截图检测进化按钮
             new_screenshot = self.device_state.take_screenshot()
@@ -2391,6 +2580,17 @@ class GameActions:
                 note=str(note or ""),
             )
             self.device_state.logger.info(f"[OBS] {state.brief()}")
+
+            # 渐进式验证：若内存桥接有数据，对比输出内存感知状态
+            try:
+                from src.bridge import SnapshotAdapter
+                adapter = SnapshotAdapter()
+                if adapter.is_available():
+                    mem_state = adapter.build_observed_game_state(note="sephie_mem")
+                    if mem_state:
+                        self.device_state.logger.info(f"[OBS-MEM] {mem_state.brief()}")
+            except Exception:
+                pass
         except Exception as e:
             # 日志记录失败不能中断对战循环。
             try:
@@ -2414,10 +2614,16 @@ class GameActions:
             return
 
         enemy_check = self._await_enemy_check(enemy_future)
-        # 给召唤和场面动画留出稳定时间，再开始攻击扫描。
-        self.device_state.sleep(0.5)
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                enemy_check = mem_adapter.get_enemy_followers() or []
+        except Exception:
+            pass
+        self.device_state.sleep(0.2)
         AttackPhase(self).run(enemy_check)
-        self.device_state.sleep(1)
+        self.device_state.sleep(0.3)
 
     def perform_fullPlus_actions(self):
         """执行进化/超进化与攻击操作"""
@@ -2444,16 +2650,26 @@ class GameActions:
             with_names=True,
         )
 
-        # Step3C：若出牌阶段没有影响敌方场面的操作，则复用出牌前的敌方存在状态；
-        # 否则在作出进化决策前刷新一次。
-        self._cached_enemy_presence_for_evolve = bool(enemy_check)
-        if bool(getattr(self, "_play_phase_enemy_affected", False)):
-            try:
-                screen = self.device_state.take_screenshot()
-                if screen is not None:
-                    self._cached_enemy_presence_for_evolve = bool(self._scan_enemy_ATK(screen))
-            except Exception:
+        # 使用内存检测时直接读内存获取最新敌方随从，不使用出牌前的缓存复用
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                enemy_check = mem_adapter.get_enemy_followers() or []
+                followers_check = [
+                    e for e in enemy_check
+                    if not (len(e) > 2 and str(e[2]) == "amulet")
+                    and not (len(e) > 5 and bool(e[5]))
+                ]
+                self._cached_enemy_presence_for_evolve = bool(followers_check)
+            else:
                 self._cached_enemy_presence_for_evolve = bool(enemy_check)
+                if bool(getattr(self, "_play_phase_enemy_affected", False)):
+                    screen = self.device_state.take_screenshot()
+                    if screen is not None:
+                        self._cached_enemy_presence_for_evolve = bool(self._scan_enemy_ATK(screen))
+        except Exception:
+            self._cached_enemy_presence_for_evolve = bool(enemy_check)
 
         policy = self.battle_policy or LegacyBattlePolicy()
         self._force_post_evolve_hand_refresh = False
@@ -2472,20 +2688,41 @@ class GameActions:
             except Exception:
                 pass
 
-        # 给召唤和进化动画留出稳定时间，再开始攻击扫描。
-        self.device_state.sleep(0.5)
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                enemy_check = mem_adapter.get_enemy_followers() or []
+        except Exception:
+            pass
+
+        self.device_state.sleep(0.2)
         AttackPhase(self).run(enemy_check)
-        self.device_state.sleep(1)
+        self.device_state.sleep(0.3)
 
 
     def _play_cards(self, image):
         """改进的出牌策略：每出一张牌都重新检测手牌，最多重试展牌次数为当前回合数"""
         self._banlist_blocked_this_round = False
         self._play_phase_enemy_affected = False
-        # 获取当前回合可用费用
+        # 获取当前回合可用费用 (优先同步内存中的回合与真实可用PP)
+        from src.bridge.helper import get_memory_adapter
+        mem_adapter = get_memory_adapter()
+        if mem_adapter and mem_adapter.is_available():
+            mem_turn = mem_adapter.get_turn()
+            if mem_turn is not None and mem_turn > 0:
+                self.device_state.current_round_count = mem_turn
+            mem_is_second = mem_adapter.is_second_player()
+            if mem_is_second is not None:
+                self.device_state.extra_cost_available_this_match = mem_is_second
+
         current_round = self.device_state.current_round_count
         cost_cap_bonus = getattr(self.device_state, 'cost_cap_bonus', 0)
         available_cost = min(10, current_round + cost_cap_bonus)
+        if mem_adapter and mem_adapter.is_available():
+            mem_pp_curr, _ = mem_adapter.get_pp_status()
+            if mem_pp_curr is not None:
+                available_cost = mem_pp_curr
         
         # 第一回合检查是否有额外费用点
         if current_round == 1 and self.device_state.extra_cost_available_this_match is None:
@@ -2659,21 +2896,42 @@ class GameActions:
             for c in cards_list:
                 base_name = str(c.get("name", "") or "")
                 try:
-                    base_cost = int(c.get("cost", 0) or 0)
+                    base_cost = int(c.get("base_cost", c.get("cost", 0)) or 0)
                 except Exception:
                     base_cost = 0
 
-                eff_cost = base_cost
+                eff_cost = int(c.get("cost", base_cost) or base_cost)
                 enhance_costs = c.get("enhance_costs")
                 if not isinstance(enhance_costs, (list, tuple)):
                     enhance_costs = []
+                crystal_costs = c.get("crystal_costs")
+                if not isinstance(crystal_costs, (list, tuple)):
+                    crystal_costs = []
+                accelerate_costs = c.get("accelerate_costs")
+                if not isinstance(accelerate_costs, (list, tuple)):
+                    accelerate_costs = []
+
+                pp_val = int(pp or 0)
+
+                # 1. 爆能强化：当可用 pp 达到更高爆能费用时生效
                 for ec in enhance_costs:
                     try:
                         ec_i = int(ec)
                     except Exception:
                         continue
-                    if ec_i <= int(pp or 0) and ec_i > eff_cost:
+                    if ec_i <= pp_val and ec_i > eff_cost:
                         eff_cost = ec_i
+
+                # 2. 结晶/激奏：当可用 pp 不足本体费用，但满足结晶或激奏费用时生效
+                if base_cost > pp_val:
+                    if c.get("can_crystal") or crystal_costs:
+                        valid_cc = [int(cc) for cc in crystal_costs if int(cc) <= pp_val]
+                        if valid_cc:
+                            eff_cost = max(valid_cc)
+                    elif c.get("can_accelerate") or accelerate_costs:
+                        valid_ac = [int(ac) for ac in accelerate_costs if int(ac) <= pp_val]
+                        if valid_ac:
+                            eff_cost = max(valid_ac)
 
                 if base_name and eff_cost != base_cost:
                     cfg_key = make_enhance_key(base_name, eff_cost)
@@ -2787,7 +3045,7 @@ class GameActions:
             remain_cost_local: int,
             retry_count_local: int,
             force_refresh: bool = False,
-        ) -> Tuple[List[Dict[str, Any]], int, bool, bool]:
+        ) -> Tuple[List[Dict[str, Any]], int, bool, bool, int]:
             if not (
                 bool(force_refresh)
                 or (
@@ -2801,7 +3059,7 @@ class GameActions:
                     )
                 )
             ):
-                return planned_cards_local, retry_count_local, False, False
+                return planned_cards_local, retry_count_local, False, False, remain_cost_local
 
             time.sleep(0.5)
             self._require_u2_device().click(
@@ -2827,6 +3085,14 @@ class GameActions:
                     card_info_local.append(f"{cost_local}费_{name_local}({center_local[0]},{center_local[1]})")
                 self.device_state.logger.info(f"出牌后更新手牌状态与位置: {' | '.join(card_info_local)}")
 
+                # 优先从内存读取当前打出后的真实剩余PP
+                from src.bridge.helper import get_memory_adapter
+                mem_adapter = get_memory_adapter()
+                if mem_adapter and mem_adapter.is_available():
+                    mem_pp_curr, _ = mem_adapter.get_pp_status()
+                    if mem_pp_curr is not None:
+                        remain_cost_local = mem_pp_curr
+
                 filtered_cards_local = [
                     c for c in new_cards_local if c.get('name', '') not in self._current_round_ignored_cards
                 ]
@@ -2834,14 +3100,14 @@ class GameActions:
             else:
                 if retry_count_local < max_retry_attempts:
                     self.device_state.logger.info(f"检测不到手牌，重新识别 ({retry_count_local + 1}/2)")
-                    return planned_cards_local, int(retry_count_local + 1), False, True
+                    return planned_cards_local, int(retry_count_local + 1), False, True, remain_cost_local
                 self.device_state.logger.info("达到最大重试次数，停止出牌")
-                return planned_cards_local, retry_count_local, True, False
+                return planned_cards_local, retry_count_local, True, False, remain_cost_local
 
             if not planned_cards_local or not _has_playable_cards(planned_cards_local, remain_cost_local):
-                return planned_cards_local, retry_count_local, True, False
+                return planned_cards_local, retry_count_local, True, False, remain_cost_local
 
-            return planned_cards_local, retry_count_local, False, False
+            return planned_cards_local, retry_count_local, False, False, remain_cost_local
 
         # 过滤掉当前回合需要忽略的卡牌
         filtered_cards = [c for c in cards if c.get('name', '') not in self._current_round_ignored_cards]
@@ -2930,7 +3196,7 @@ class GameActions:
                 pass
             
             planned_cards.remove(card_to_play)
-            planned_cards, retry_count, should_break, should_continue = _refresh_planned_cards_after_play(
+            planned_cards, retry_count, should_break, should_continue, remain_cost = _refresh_planned_cards_after_play(
                 planned_cards,
                 remain_cost,
                 retry_count,
@@ -3018,14 +3284,26 @@ class GameActions:
         steps = get_card_effect_steps(
             getattr(self.device_state, "config", None),
             card_name=cfg_key,
-            trigger="on_play",
+            trigger="on_play_bridge",
         )
         if (not steps) and cfg_key != card_name:
             steps = get_card_effect_steps(
                 getattr(self.device_state, "config", None),
                 card_name=card_name,
+                trigger="on_play_bridge",
+            )
+        if not steps:
+            steps = get_card_effect_steps(
+                getattr(self.device_state, "config", None),
+                card_name=cfg_key,
                 trigger="on_play",
             )
+            if (not steps) and cfg_key != card_name:
+                steps = get_card_effect_steps(
+                    getattr(self.device_state, "config", None),
+                    card_name=card_name,
+                    trigger="on_play",
+                )
         ops = normalize_effect_steps_to_ops(steps)
         if not ops:
             return False
@@ -3151,91 +3429,121 @@ class GameActions:
             sift_recognizer = self.hand_manager.sift_recognition
 
             try:
-                # 3. 识别手牌（带重试机制）
-                max_retries = 3
+                # 3. 优先通过内存桥接获取换牌阶段的4张初始手牌
                 cards = None
+                is_mem = False
+                from src.bridge.helper import get_memory_adapter
+                mem_adapter = get_memory_adapter()
+                if mem_adapter and mem_adapter.is_available():
+                    # 换牌阶段等待内存更新（最多等待 4.0 秒，每 0.2 秒轮询一次）
+                    # 原因：对局刚开始动画阶段，SephiesDeckLab 需要数秒检测新对局并写入第0回合(turn=0)初始4张手牌
+                    for wait_i in range(20):
+                        if not mem_adapter.is_available():
+                            break
+                        mem_cards = mem_adapter.get_mulligan_cards()
+                        if not mem_cards and mem_adapter.get_turn() == 0:
+                            mem_cards = mem_adapter.get_hand_cards()
+                        if mem_cards and len(mem_cards) == 4:
+                            cards = mem_cards
+                            is_mem = True
+                            wait_s = wait_i * 0.2
+                            if wait_s > 0:
+                                self.device_state.logger.info(
+                                    f"[内存换牌] 成功从内存获取换牌阶段4张卡牌 (等待 {wait_s:.1f}s)"
+                                )
+                            else:
+                                self.device_state.logger.info("[内存换牌] 成功从内存获取换牌阶段4张卡牌")
+                            break
+                        time.sleep(0.2)
 
-                for attempt in range(max_retries):
-                    # 执行识别
-                    recognized_cards = sift_recognizer.recognize_hand_cards(
-                        screenshot, hand_area=mulligan_region
-                    )
+                tag = "[内存换牌]" if is_mem else "[SIFT换牌]"
 
-                    if not recognized_cards:
-                        self.device_state.logger.warning(
-                            f"[SIFT换牌] 第{attempt+1}次识别: 未检测到卡牌"
+                # 若内存无响应或未处于换牌阶段，回退到 SIFT 模板识别（带重试机制）
+                max_retries = 3
+                if not cards:
+                    if mem_adapter:
+                        self.device_state.logger.warning("[换牌] 内存尚未同步第0回合手牌，回退到SIFT视觉识别")
+                    for attempt in range(max_retries):
+                        # 执行识别
+                        recognized_cards = sift_recognizer.recognize_hand_cards(
+                            screenshot, hand_area=mulligan_region
                         )
-                        if attempt < max_retries - 1:
-                            time.sleep(0.3)  # 等待卡牌动画完成
-                            screenshot = self.device_state.take_screenshot()
-                            if screenshot is None:
-                                continue
-                        continue
 
-                    # 确保最多4张牌（避免过度识别）
-                    recognized_cards = recognized_cards[:4]
+                        if not recognized_cards:
+                            self.device_state.logger.warning(
+                                f"[SIFT换牌] 第{attempt+1}次识别: 未检测到卡牌"
+                            )
+                            if attempt < max_retries - 1:
+                                time.sleep(0.3)  # 等待卡牌动画完成
+                                screenshot = self.device_state.take_screenshot()
+                                if screenshot is None:
+                                    continue
+                            continue
 
-                    # 验证识别结果
-                    is_valid, reason = self._validate_mulligan_cards(recognized_cards)
+                        # 确保最多4张牌（避免过度识别）
+                        recognized_cards = recognized_cards[:4]
 
-                    if is_valid:
-                        self.device_state.logger.info(
-                            f"[SIFT换牌] 第{attempt+1}次识别成功，验证通过"
-                        )
-                        cards = recognized_cards
-                        break
-                    else:
-                        self.device_state.logger.warning(
-                            f"[SIFT换牌] 第{attempt+1}次识别失败: {reason}"
-                        )
+                        # 验证识别结果
+                        is_valid, reason = self._validate_mulligan_cards(recognized_cards)
 
-                        # 调试：输出识别到的卡牌位置信息。
-                        for i, card in enumerate(recognized_cards):
-                            cx, cy = card['center']
-                            self.device_state.logger.debug(
-                                f"  卡牌{i+1}: {card['name']} | "
-                                f"费用{card['cost']} | "
-                                f"位置({cx},{cy}) | "
-                                f"置信度{card.get('confidence', 0):.3f}"
+                        if is_valid:
+                            self.device_state.logger.info(
+                                f"[SIFT换牌] 第{attempt+1}次识别成功，验证通过"
+                            )
+                            cards = recognized_cards
+                            break
+                        else:
+                            self.device_state.logger.warning(
+                                f"[SIFT换牌] 第{attempt+1}次识别失败: {reason}"
                             )
 
-                        # 保存失败截图用于调试
-                        if debug_flag:
-                            failure_dir = "debug_mulligan_failures"
-                            if not os.path.exists(failure_dir):
-                                os.makedirs(failure_dir)
-
-                            failure_img = np.array(screenshot)
-                            failure_img = cv2.cvtColor(failure_img, cv2.COLOR_RGB2BGR)
-
-                            # 标注识别到的位置
+                            # 调试：输出识别到的卡牌位置信息。
                             for i, card in enumerate(recognized_cards):
                                 cx, cy = card['center']
-                                cv2.circle(failure_img, (cx, cy), 8, (0, 0, 255), 2)
-                                cv2.putText(
-                                    failure_img,
-                                    f"{i+1}:{card['cost']}",
-                                    (cx - 15, cy - 15),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.5,
-                                    (0, 0, 255),
-                                    2
+                                self.device_state.logger.debug(
+                                    f"  卡牌{i+1}: {card['name']} | "
+                                    f"费用{card['cost']} | "
+                                    f"位置({cx},{cy}) | "
+                                    f"置信度{card.get('confidence', 0):.3f}"
                                 )
 
-                            failure_path = os.path.join(
-                                failure_dir,
-                                f"fail_{int(time.time()*1000)}_attempt{attempt+1}.png"
-                            )
-                            cv2.imwrite(failure_path, failure_img)
-                            self.device_state.logger.debug(
-                                f"[SIFT换牌] 失败截图已保存: {failure_path}"
-                            )
+                            # 保存失败截图用于调试
+                            if debug_flag:
+                                failure_dir = "debug_mulligan_failures"
+                                if not os.path.exists(failure_dir):
+                                    os.makedirs(failure_dir)
 
-                        if attempt < max_retries - 1:
-                            time.sleep(0.3)  # 等待后重试
-                            screenshot = self.device_state.take_screenshot()
-                            if screenshot is None:
-                                continue
+                                failure_img = np.array(screenshot)
+                                failure_img = cv2.cvtColor(failure_img, cv2.COLOR_RGB2BGR)
+
+                                # 标注识别到的位置
+                                for i, card in enumerate(recognized_cards):
+                                    cx, cy = card['center']
+                                    cv2.circle(failure_img, (cx, cy), 8, (0, 0, 255), 2)
+                                    cv2.putText(
+                                        failure_img,
+                                        f"{i+1}:{card['cost']}",
+                                        (cx - 15, cy - 15),
+                                        cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.5,
+                                        (0, 0, 255),
+                                        2
+                                    )
+
+                                failure_path = os.path.join(
+                                    failure_dir,
+                                    f"fail_{int(time.time()*1000)}_attempt{attempt+1}.png"
+                                )
+                                cv2.imwrite(failure_path, failure_img)
+                                self.device_state.logger.debug(
+                                    f"[SIFT换牌] 失败截图已保存: {failure_path}"
+                                )
+
+                            if attempt < max_retries - 1:
+                                time.sleep(0.3)  # 等待后重试
+                                screenshot = self.device_state.take_screenshot()
+                                if screenshot is None:
+                                    continue
 
                 # 重试后仍失败
                 if cards is None:
@@ -3291,7 +3599,7 @@ class GameActions:
 
                 # 记录识别结果（含详细位置信息）
                 card_names = [f"{c['cost']}费_{c['name']}" for c in cards]
-                self.device_state.logger.info(f"[SIFT换牌] 识别到手牌: {' | '.join(card_names)}")
+                self.device_state.logger.info(f"{tag} 识别到手牌: {' | '.join(card_names)}")
 
                 for i, card in enumerate(cards):
                     cx, cy = card['center']
@@ -3315,8 +3623,8 @@ class GameActions:
                     priority_cards
                 )
 
-                self.device_state.logger.info(f"[SIFT换牌] 策略: {strategy_setting}")
-                self.device_state.logger.info(f"[SIFT换牌] 保留: {keep_indices}, 换掉: {swap_indices}")
+                self.device_state.logger.info(f"{tag} 策略: {strategy_setting}")
+                self.device_state.logger.info(f"{tag} 保留: {keep_indices}, 换掉: {swap_indices}")
 
                 # 6. 执行换牌拖拽操作
                 if swap_indices:
@@ -3325,7 +3633,7 @@ class GameActions:
                         center_x, center_y = card['center']
 
                         self.device_state.logger.info(
-                            f"[SIFT换牌] 换掉 {card['name']} ({card['cost']}费) - 原因: {reason}"
+                            f"{tag} 换掉 {card['name']} ({card['cost']}费) - 原因: {reason}"
                         )
 
                         # 执行拖拽 (从卡牌中心向上拖动)
@@ -3344,9 +3652,9 @@ class GameActions:
 
                         time.sleep(random.uniform(0.05, 0.1))
 
-                    self.device_state.logger.info(f"[SIFT换牌] 换牌完成，共换掉 {len(swap_indices)} 张")
+                    self.device_state.logger.info(f"{tag} 换牌完成，共换掉 {len(swap_indices)} 张")
                 else:
-                    self.device_state.logger.info("[SIFT换牌] 无需换牌，当前手牌已满足策略")
+                    self.device_state.logger.info(f"{tag} 无需换牌，当前手牌已满足策略")
 
                 # 7. 调试模式下保存截图。
                 if debug_flag:
@@ -3371,7 +3679,7 @@ class GameActions:
 
                     debug_path = os.path.join(debug_dir, f"mulligan_{int(time.time()*1000)}.png")
                     cv2.imwrite(debug_path, debug_img)
-                    self.device_state.logger.info(f"[SIFT换牌] Debug图片已保存: {debug_path}")
+                    self.device_state.logger.info(f"{tag} Debug图片已保存: {debug_path}")
 
                 return True
 
@@ -3380,9 +3688,9 @@ class GameActions:
                 pass
 
         except Exception as e:
-            self.device_state.logger.error(f"[SIFT换牌] 执行失败: {str(e)}")
+            self.device_state.logger.error(f"[换牌] 执行失败: {str(e)}")
             import traceback
-            self.device_state.logger.error(f"[SIFT换牌] 错误详情:\n{traceback.format_exc()}")
+            self.device_state.logger.error(f"[换牌] 错误详情:\n{traceback.format_exc()}")
             return False
 
     def _scan_enemy_followers(self, screenshot, is_select=False):
@@ -3502,6 +3810,21 @@ class GameActions:
         通过多次单帧采样（默认3次）+ slot聚合 + 必要时确认重扫，
         减少外层零散补扫并稳定类型/命名结果。
         """
+        # 优先使用内存检测直接读取实时场面，不使用缓存复用或多帧视觉采样
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                mem_ours = mem_adapter.get_our_followers()
+                if mem_ours is not None:
+                    followers_local = sorted(list(mem_ours), key=lambda item: int(item[0]) if len(item) > 0 else 0, reverse=bool(sort_desc))
+                    self.follower_manager.update_positions(followers_local)
+                    if debug_flag:
+                        self.device_state.logger.info(f"[内存] 我方当前场上随从: {followers_local}")
+                    return followers_local
+        except Exception:
+            pass
+
         # 快速扫描不执行 SIFT 命名，因此需要保留旧名称。
         try:
             cached_before = self.follower_manager.get_positions() or []

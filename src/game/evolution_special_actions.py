@@ -31,7 +31,8 @@ class EvolutionSpecialActions:
         existing_followers: 已扫描的随从结果，避免重复扫描
         """
         self._force_post_evolve_hand_refresh = False
-        trigger = "on_super_evolve" if is_super_evolution else "on_evolve"
+        base_trigger = "on_super_evolve" if is_super_evolution else "on_evolve"
+        bridge_trigger = f"{base_trigger}_bridge"
 
         effect_key = str(follower_name or "")
         source_uid = None
@@ -67,9 +68,29 @@ class EvolutionSpecialActions:
         except Exception:
             effect_key = str(follower_name or "")
 
-        steps = get_card_effect_steps(
-            getattr(self.device_state, "config", None), card_name=effect_key, trigger=trigger
-        )
+        from src.bridge.snapshot_adapter import is_bridge_mode_active
+        is_bridge_active = is_bridge_mode_active(self.device_state)
+
+        steps = None
+        used_trigger = base_trigger
+        cfg = getattr(self.device_state, "config", None)
+
+        if is_bridge_active:
+            steps = get_card_effect_steps(cfg, card_name=effect_key, trigger=bridge_trigger)
+            if (not steps) and follower_name and str(effect_key) != str(follower_name):
+                steps = get_card_effect_steps(cfg, card_name=str(follower_name), trigger=bridge_trigger)
+            if steps:
+                used_trigger = bridge_trigger
+                try:
+                    self.device_state.logger.info(f"[{effect_key}] 触发仅桥接(读内存){bridge_trigger}特殊效果配置")
+                except Exception:
+                    pass
+
+        if not steps:
+            steps = get_card_effect_steps(cfg, card_name=effect_key, trigger=base_trigger)
+            if (not steps) and follower_name and str(effect_key) != str(follower_name):
+                steps = get_card_effect_steps(cfg, card_name=str(follower_name), trigger=base_trigger)
+            used_trigger = base_trigger
 
         ops = normalize_effect_steps_to_ops(steps)
 
@@ -96,20 +117,20 @@ class EvolutionSpecialActions:
             pre_action_our_followers=pre_action_followers,
             pre_action_our_follower_count=pre_action_count,
         )
-        run_result = EffectEngine.run_ops(ops, ctx=ctx, trigger_id=trigger)
+        run_result = EffectEngine.run_ops(ops, ctx=ctx, trigger_id=used_trigger)
 
-            # 必选敌方随从目标未选中时，游戏可能仍停留在目标界面；先取消，
-            # 再让调用方尝试其他随从。
+        # 必选敌方目标（随从/护符）未选中时，游戏可能仍停留在目标界面；先取消，
+        # 再让调用方尝试其他随从。
         fail_kinds = list(getattr(ctx, "select_targets_fail_kinds", []) or [])
         success_kinds = set(str(k) for k in list(getattr(ctx, "select_targets_success_kinds", []) or []))
         enemy_target_failed = any(
-            str(k) == "enemy_follower" and "enemy_follower" not in success_kinds
+            str(k) in ("enemy_follower", "enemy_amulet") and str(k) not in success_kinds
             for k in fail_kinds
         )
         if enemy_target_failed:
             try:
                 self.device_state.logger.info(
-                    f"[{effect_key}] 进化敌方随从目标选择失败，取消当前进化并尝试其他随从"
+                    f"[{effect_key}] 进化敌方目标选择失败，取消当前进化并尝试其他随从"
                 )
             except Exception:
                 pass
@@ -124,7 +145,7 @@ class EvolutionSpecialActions:
         if run_result.aborted:
             try:
                 self.device_state.logger.warning(
-                    f"[{effect_key}] {trigger} effects aborted，取消当前进化并尝试其他随从"
+                    f"[{effect_key}] {used_trigger} effects aborted，取消当前进化并尝试其他随从"
                 )
             except Exception:
                 pass

@@ -128,6 +128,49 @@ class ConfigPage(QWidget):
         )
         basic_layout.addLayout(basic_form)
         content_layout.addWidget(basic_panel)
+        capture_panel, capture_layout = self._create_section(
+            "截图设置",
+            "选择自动化运行时的画面截取方案。采用 WGC (Windows Graphics Capture) 硬件加速捕获，"
+            "速度快 (约15-20ms)，且自动精准剔除模拟器标题栏与边框，严格输出标准 720p (1280x720) 分辨率。",
+            "CaptureSettingsPanel",
+        )
+        capture_form = QGridLayout()
+        self._configure_form_layout(capture_form)
+
+        self.config_capture_combo = QComboBox()
+        self.config_capture_combo.setObjectName("ConfigCaptureMethodCombo")
+        self.config_capture_combo.addItem("WGC 截图（极速推荐，保持720p）", "wgc")
+        self.config_capture_combo.addItem("ADB 截图（传统兼容方式）", "adb")
+        self.config_capture_combo.setMinimumWidth(280)
+
+        devices = self.config_data.get("devices", [])
+        dev0 = devices[0] if isinstance(devices, list) and devices and isinstance(devices[0], dict) else {}
+        current_method = str(dev0.get("screenshot_method", "wgc")).lower()
+        m_idx = self.config_capture_combo.findData(current_method)
+        self.config_capture_combo.setCurrentIndex(max(0, m_idx))
+
+        self.wgc_window_title_input = QLineEdit(str(dev0.get("wgc_window_title", "")))
+        self.wgc_window_title_input.setPlaceholderText("留空则自动检测 MuMu/雷电/夜神/影之诗 窗口")
+
+        self._add_form_row(
+            capture_form,
+            0,
+            "截图方案",
+            self.config_capture_combo,
+            "",
+            "推荐使用 WGC；若环境不支持或窗口未捕获会自动回退 ADB。",
+        )
+        self._add_form_row(
+            capture_form,
+            2,
+            "窗口匹配关键词",
+            self.wgc_window_title_input,
+            "",
+            "可选自定义窗口标题或正则表达式，留空则自动匹配当前运行的游戏/模拟器。",
+        )
+        capture_layout.addLayout(capture_form)
+        content_layout.addWidget(capture_panel)
+
 
         recognition_panel, recognition_layout = self._create_section(
             "识别设置",
@@ -743,6 +786,18 @@ class ConfigPage(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, "背景设置错误", str(e))
             return
+        chosen_method = str(self.config_capture_combo.currentData() or "wgc")
+        custom_title = self.wgc_window_title_input.text().strip()
+        devices = self.config_data.get("devices", [])
+        if isinstance(devices, list) and devices:
+            for d in devices:
+                if isinstance(d, dict):
+                    d["screenshot_method"] = chosen_method
+                    if custom_title:
+                        d["wgc_window_title"] = custom_title
+                    else:
+                        d.pop("wgc_window_title", None)
+
 
         config_path = get_config_path()
         try:

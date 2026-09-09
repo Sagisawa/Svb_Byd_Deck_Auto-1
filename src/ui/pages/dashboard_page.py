@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
 )
 
 from src.ui.deck_io import MAX_DECK_SIZE
+from src.device.wgc import list_candidate_windows
 
 
 def format_duration(seconds: int) -> str:
@@ -290,11 +291,11 @@ class DashboardPage(QWidget):
         overview.setSpacing(11)
         self.device_dot = QLabel("●")
         self.device_dot.setObjectName("DeviceDot")
-        self.device_status = QLabel("设备未连接")
+        self.device_status = QLabel("游戏窗口未连接")
         self.device_status.setObjectName("SectionTitle")
         self.banner_run_status = QLabel("未连接")
         self.banner_run_status.setObjectName("SubtleText")
-        self.device_detail = QLabel("请填写 ADB 地址后连接设备")
+        self.device_detail = QLabel("请选择游戏窗口后点击“连接游戏”（后台静默运行）")
         self.device_detail.setObjectName("SubtleText")
         self.device_detail.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         device_text = QVBoxLayout()
@@ -368,26 +369,74 @@ class DashboardPage(QWidget):
         device_form = QGridLayout()
         device_form.setHorizontalSpacing(10)
         device_form.setVerticalSpacing(10)
-        self.adb_input = QLineEdit("127.0.0.1:16384")
+        self.adb_input = QLineEdit("Windows原生")
+        self.adb_input.setVisible(False)
         self.server_combo = QComboBox()
         self.server_combo.addItems(["国服", "国际服"])
-        self.adb_input.textChanged.connect(self._refresh_control_states)
+        self.capture_method_combo = QComboBox()
+        self.capture_method_combo.addItem("WGC 截图（极速推荐）", "wgc")
+        self.capture_method_combo.addItem("ADB 截图（传统兼容）", "adb")
+        self.capture_method_combo.setVisible(False)
+
+        self.recognition_mode_label = QLabel("识别方式")
+        self.recognition_mode_combo = QComboBox()
+        self.recognition_mode_combo.addItem("使用SephiesDeckLab工具识别", "memory")
+        self.recognition_mode_combo.addItem("传统图色识别与OCR", "vision")
+        self.recognition_mode_combo.setMinimumWidth(210)
+
+        self.lab_process_combo = QComboBox()
+        self.lab_process_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.lab_process_combo.setMinimumWidth(260)
+        self.refresh_lab_button = QPushButton("刷新程序")
+        self.refresh_lab_button.setObjectName("SecondaryButton")
+        self.refresh_lab_button.clicked.connect(lambda: self.populate_lab_processes())
+
+        self.wgc_window_label = QLabel("游戏窗口")
+        self.wgc_window_combo = QComboBox()
+        self.wgc_window_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.wgc_window_combo.setMinimumWidth(280)
+        self.refresh_windows_button = QPushButton("刷新窗口")
+        self.refresh_windows_button.setObjectName("SecondaryButton")
+        self.refresh_windows_button.clicked.connect(lambda: self.populate_wgc_windows())
+        self.wgc_preview_button = QPushButton("截图预览")
+        self.wgc_preview_button.setObjectName("SecondaryButton")
+        self.wgc_preview_button.clicked.connect(self.screenshot_requested)
+
         self.server_combo.currentTextChanged.connect(self._refresh_control_states)
-        self.connect_button = QPushButton("连接设备")
+        self.wgc_window_combo.currentIndexChanged.connect(self._refresh_control_states)
+        self.recognition_mode_combo.currentIndexChanged.connect(self._on_recognition_mode_changed)
+        self.lab_process_combo.currentIndexChanged.connect(self._on_lab_process_changed)
+
+        self.connect_button = QPushButton("连接游戏")
         self.connect_button.setObjectName("SecondaryButton")
         self.connect_button.clicked.connect(self.connect_requested)
-        self.screenshot_button = QPushButton("截图预览")
-        self.screenshot_button.setObjectName("SecondaryButton")
-        self.screenshot_button.clicked.connect(self.screenshot_requested)
-        self.screenshot_button.setEnabled(False)
-        device_form.addWidget(QLabel("ADB 地址"), 0, 0)
-        device_form.addWidget(self.adb_input, 0, 1, 1, 3)
-        device_form.addWidget(self.connect_button, 0, 4)
-        device_form.addWidget(self.screenshot_button, 0, 5)
-        device_form.addWidget(QLabel("服务器"), 1, 0)
-        device_form.addWidget(self.server_combo, 1, 1)
+        self.screenshot_button = self.wgc_preview_button
+
+        # 第 0 行：识别方式（使用SephiesDeckLab工具识别 / 传统图色识别与OCR）+ 正在运行程序选择下拉 + 刷新按钮
+        mode_layout = QHBoxLayout()
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(10)
+        mode_layout.addWidget(self.recognition_mode_combo)
+        mode_layout.addWidget(self.lab_process_combo, stretch=1)
+        mode_layout.addWidget(self.refresh_lab_button)
+
+        device_form.addWidget(self.recognition_mode_label, 0, 0)
+        device_form.addLayout(mode_layout, 0, 1, 1, 5)
+
+        # 第 1 行：游戏窗口 + 下拉列表 + 刷新窗口 + 截图预览
+        device_form.addWidget(self.wgc_window_label, 1, 0)
+        device_form.addWidget(self.wgc_window_combo, 1, 1, 1, 3)
+        device_form.addWidget(self.refresh_windows_button, 1, 4)
+        device_form.addWidget(self.wgc_preview_button, 1, 5)
+
+        # 第 2 行：游戏服务器 + 下拉列表 + 连接游戏按钮
+        device_form.addWidget(QLabel("游戏服务器"), 2, 0)
+        device_form.addWidget(self.server_combo, 2, 1)
+        device_form.addWidget(self.connect_button, 2, 4, 1, 2)
         device_form.setColumnStretch(3, 1)
         control.addLayout(device_form)
+        self.populate_wgc_windows()
+        self.populate_lab_processes()
         self.log_panel = QFrame()
         self.log_panel.setObjectName("DashboardPanel")
         log_layout = QVBoxLayout(self.log_panel)
@@ -566,10 +615,23 @@ class DashboardPage(QWidget):
             self.server_combo.setCurrentText("国际服" if device.get("is_global") else "国服")
             self.deep_color_checkbox.setChecked(bool(device.get("screenshot_deep_color", False)))
             self.gala_mode_checkbox.setChecked(bool(device.get("gala_mode", False)))
+            method_val = str(device.get("screenshot_method", "wgc")).lower()
+            idx = self.capture_method_combo.findData(method_val)
+            self.capture_method_combo.setCurrentIndex(max(0, idx))
+            pref_hwnd = int(device.get("target_hwnd", 0) or 0)
+            pref_title = str(device.get("wgc_window_title", "") or "")
+            self.populate_wgc_windows(preferred_hwnd=pref_hwnd, preferred_title=pref_title)
         game = config.get("game", {}) if isinstance(config, dict) else {}
         auto_restart = config.get("auto_restart", {}) if isinstance(config, dict) else {}
+        memory_reader = config.get("memory_reader", {}) if isinstance(config, dict) else {}
         self.auto_pass_checkbox.setChecked(bool(game.get("enable_auto_pass", False)))
         self.auto_restart_checkbox.setChecked(bool(auto_restart.get("enabled", True)))
+        use_memory = bool(memory_reader.get("enabled", True))
+        idx = self.recognition_mode_combo.findData("memory" if use_memory else "vision")
+        self.recognition_mode_combo.setCurrentIndex(max(0, idx))
+        saved_log_path = str(memory_reader.get("session_log_path") or "auto")
+        self.populate_lab_processes(preferred_path=saved_log_path)
+        self._on_recognition_mode_changed()
         rotation = config.get("deck_rotation", {}) if isinstance(config, dict) else {}
         if not isinstance(rotation, dict):
             rotation = {}
@@ -603,6 +665,11 @@ class DashboardPage(QWidget):
             "gala_mode": self.gala_mode_checkbox.isChecked(),
             "enable_auto_pass": self.auto_pass_checkbox.isChecked(),
             "auto_restart_enabled": self.auto_restart_checkbox.isChecked(),
+            "memory_reader_enabled": str(self.recognition_mode_combo.currentData() or "memory") == "memory",
+            "session_log_path": str(self.lab_process_combo.currentData() or "auto"),
+            "screenshot_method": str(self.capture_method_combo.currentData() or "wgc"),
+            "target_hwnd": int(self.wgc_window_combo.currentData() or 0),
+            "wgc_window_title": str(self.wgc_window_combo.currentText() or ""),
         }
 
     def set_device_info(self, info: Dict[str, Any]) -> None:
@@ -611,20 +678,21 @@ class DashboardPage(QWidget):
         self.device_dot.setProperty("connected", connected)
         self.device_dot.style().unpolish(self.device_dot)
         self.device_dot.style().polish(self.device_dot)
-        self.device_status.setText("设备已连接" if connected else str(info.get("status") or "设备未连接"))
-        serial = str(info.get("serial") or self.adb_input.text() or "-")
+        self.device_status.setText("游戏窗口已连接" if connected else str(info.get("status") or "游戏窗口未连接"))
         server = str(info.get("server") or self.server_combo.currentText() or "-")
-        model = str(info.get("model") or "未知型号")
-        resolution = str(info.get("resolution") or "未知分辨率")
+        model = str(info.get("model") or "Windows 原生窗口")
+        resolution = str(info.get("resolution") or "1280×720")
         message = str(info.get("message") or "")
         if connected:
+            win_text = self.wgc_window_combo.currentText()
+            clean_win = win_text.replace("★ ", "").split("  (")[0]
             self.device_detail.setText(
-                f"ADB: {serial}  |  服务器: {server}  |  "
-                f"型号: {model}  |  分辨率: {resolution}"
+                f"目标窗口: {clean_win}  |  服务器: {server}  |  "
+                f"分辨率: {resolution}  |  模式: Windows 原生后台"
             )
         else:
-            self.device_detail.setText(message or f"ADB: {serial}")
-        self.screenshot_button.setEnabled(connected)
+            self.device_detail.setText(message or "请选择游戏窗口后点击“连接游戏”（后台运行）")
+        self.screenshot_button.setEnabled(True)
         self._refresh_control_states()
 
     def set_run_status(self, status: str) -> None:
@@ -658,32 +726,122 @@ class DashboardPage(QWidget):
         paused = self._run_status == "paused"
         active = running or paused or self._run_status == "stopping"
         connecting = self._run_status == "connecting"
-        has_serial = bool(self.adb_input.text().strip())
         settings_enabled = self._run_status not in {
             "connecting",
             "running",
             "paused",
             "stopping",
         }
-        self.connect_button.setEnabled(not active and not connecting and has_serial)
-        self.start_button.setEnabled(not active and not connecting and has_serial)
+        self.connect_button.setEnabled(not active and not connecting)
+        self.start_button.setEnabled(not active and not connecting)
         self.start_button.setToolTip(
             ""
             if self._device_connected
-            else "开始运行时会先连接并检查当前设备"
+            else "开始运行时会自动绑定并检查所选游戏窗口"
         )
         self.pause_button.setEnabled(running)
         self.resume_button.setEnabled(paused)
         self.stop_button.setEnabled(running or paused)
         for control in (
-            self.adb_input,
             self.server_combo,
+            self.wgc_window_combo,
+            self.refresh_windows_button,
+            self.wgc_preview_button,
+            self.connect_button,
             self.deep_color_checkbox,
             self.gala_mode_checkbox,
             self.auto_pass_checkbox,
             self.auto_restart_checkbox,
+            self.recognition_mode_combo,
+            self.lab_process_combo,
+            self.refresh_lab_button,
         ):
             control.setEnabled(settings_enabled)
+
+    def _on_recognition_mode_changed(self) -> None:
+        is_memory = str(self.recognition_mode_combo.currentData() or "memory") == "memory"
+        self.lab_process_combo.setVisible(is_memory)
+        self.refresh_lab_button.setVisible(is_memory)
+        self._refresh_control_states()
+
+    def _on_lab_process_changed(self) -> None:
+        path = str(self.lab_process_combo.currentData() or "auto")
+        if path == "__browse__":
+            from PyQt5.QtWidgets import QFileDialog
+
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "选择 app_session.jsonl 日志文件",
+                "",
+                "Session Log (*.jsonl);;All Files (*)",
+            )
+            if file_path:
+                file_path = os.path.abspath(file_path)
+                idx = self.lab_process_combo.findData(file_path)
+                if idx == -1:
+                    label = f"【自定义】{os.path.basename(os.path.dirname(os.path.dirname(file_path)))} ({file_path})"
+                    self.lab_process_combo.insertItem(1, label, file_path)
+                    idx = 1
+                self.lab_process_combo.setCurrentIndex(idx)
+                path = file_path
+            else:
+                self.lab_process_combo.setCurrentIndex(0)
+                return
+
+        if path not in ("auto", "__browse__"):
+            if os.path.exists(path) and os.path.isfile(path):
+                tip = f"锁定日志: {path} (日志文件就绪)"
+            else:
+                tip = f"锁定日志: {path} (未检测到日志文件，运行时将安全回退为图色识别)"
+        else:
+            tip = "【自动探测】优先锁定当前运行中的Lab工具"
+        self.lab_process_combo.setToolTip(tip)
+
+        try:
+            from src.bridge import get_global_tracker_bridge
+
+            get_global_tracker_bridge().set_log_path(path)
+        except Exception:
+            pass
+
+    def populate_lab_processes(self, preferred_path: Optional[str] = None) -> None:
+        """刷新并填充当前运行的 Lab 程序、全部桌面窗口及日志路径列表。"""
+        if not hasattr(self, "lab_process_combo"):
+            return
+        if preferred_path is None:
+            current = self.lab_process_combo.currentData()
+            preferred_path = str(current) if current else "auto"
+
+        self.lab_process_combo.blockSignals(True)
+        self.lab_process_combo.clear()
+
+        try:
+            from src.bridge.detector import get_all_candidate_lab_targets
+
+            targets = get_all_candidate_lab_targets(preferred_path=preferred_path, include_all_windows=True)
+        except Exception:
+            targets = []
+
+        selected_idx = 0
+        for i, t in enumerate(targets):
+            self.lab_process_combo.addItem(t.label, t.log_path)
+            if t.log_path and t.log_path not in ("auto", "__browse__"):
+                tip_detail = f"日志路径: {t.log_path}" if t.log_exists else f"日志路径: {t.log_path} (文件不存在，自动回退图色)"
+                self.lab_process_combo.setItemData(i, tip_detail, Qt.ToolTipRole)
+            if preferred_path and (t.log_path == preferred_path or (preferred_path == "auto" and t.log_path == "auto")):
+                selected_idx = i
+
+        self.lab_process_combo.setCurrentIndex(selected_idx)
+        current_data = str(self.lab_process_combo.currentData() or "auto")
+        if current_data not in ("auto", "__browse__"):
+            if os.path.exists(current_data) and os.path.isfile(current_data):
+                tip = f"锁定日志: {current_data} (日志文件就绪)"
+            else:
+                tip = f"锁定日志: {current_data} (未检测到日志文件，运行时将安全回退为图色识别)"
+        else:
+            tip = "【自动探测】优先锁定当前运行中的Lab工具"
+        self.lab_process_combo.setToolTip(tip)
+        self.lab_process_combo.blockSignals(False)
 
     def set_elapsed(self, seconds: int) -> None:
         self.runtime_metric.set_value(format_duration(seconds), "本次运行")
@@ -712,6 +870,47 @@ class DashboardPage(QWidget):
             f"{count}/{MAX_DECK_SIZE}", "已应用卡牌" if applied else "工作区待应用"
         )
         self.cost_curve.set_costs(data.get("costs") or {})
+
+    def populate_wgc_windows(
+        self,
+        preferred_hwnd: Optional[int] = None,
+        preferred_title: Optional[str] = None,
+    ) -> None:
+        """刷新并填充当前桌面可供 WGC 捕获的应用窗口列表。"""
+        if not hasattr(self, "wgc_window_combo"):
+            return
+        current_selection = self.wgc_window_combo.currentData()
+        target_hwnd = preferred_hwnd if preferred_hwnd is not None else current_selection
+
+        self.wgc_window_combo.blockSignals(True)
+        self.wgc_window_combo.clear()
+        self.wgc_window_combo.addItem("【自动探测】推荐匹配游戏/模拟器窗口", 0)
+
+        windows = []
+        try:
+            windows = list_candidate_windows()
+        except Exception:
+            pass
+
+        selected_index = 0
+        first_game_index = -1
+
+        for i, (hwnd, label, title, is_game) in enumerate(windows, start=1):
+            self.wgc_window_combo.addItem(label, hwnd)
+            if target_hwnd and hwnd == target_hwnd:
+                selected_index = i
+            elif preferred_title and preferred_title in title and selected_index == 0:
+                selected_index = i
+            if is_game and first_game_index == -1:
+                first_game_index = i
+
+        # 默认优先自动选中首个游戏窗口（例如 ShadowverseWB）
+        if selected_index == 0 and first_game_index != -1 and (target_hwnd is None or target_hwnd == 0):
+            selected_index = first_game_index
+
+        self.wgc_window_combo.setCurrentIndex(selected_index)
+        self.wgc_window_combo.blockSignals(False)
+        self._refresh_control_states()
 
     def set_rotation_status(self, data: Dict[str, Any]) -> None:
         enabled = bool(data.get("enabled", False))

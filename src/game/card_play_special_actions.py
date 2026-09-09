@@ -39,14 +39,36 @@ class CardPlaySpecialActions:
         # 爆能变体可以使用独立配置键。
         cfg_key = card.get('_config_key') or card.get('config_key') or card_name
 
-        # 优先执行配置驱动的 Step3A 效果，旧步骤会在入口处规范化。
-        steps = get_card_effect_steps(
-            self.device_state.config, card_name=str(cfg_key), trigger="on_play"
-        )
-        if (not steps) and str(cfg_key) != str(card_name):
+        # 优先执行配置驱动的效果：桥接模式激活时优先尝试 on_play_bridge，未命中则平滑回退 on_play。
+        from src.bridge.snapshot_adapter import is_bridge_mode_active
+        is_bridge_active = is_bridge_mode_active(self.device_state)
+
+        steps = None
+        used_trigger = "on_play"
+        if is_bridge_active:
             steps = get_card_effect_steps(
-                self.device_state.config, card_name=str(card_name), trigger="on_play"
+                self.device_state.config, card_name=str(cfg_key), trigger="on_play_bridge"
             )
+            if (not steps) and str(cfg_key) != str(card_name):
+                steps = get_card_effect_steps(
+                    self.device_state.config, card_name=str(card_name), trigger="on_play_bridge"
+                )
+            if steps:
+                used_trigger = "on_play_bridge"
+                try:
+                    self.device_state.logger.info(f"[{card_name}] 触发仅桥接(读内存)出牌特殊效果配置")
+                except Exception:
+                    pass
+
+        if not steps:
+            steps = get_card_effect_steps(
+                self.device_state.config, card_name=str(cfg_key), trigger="on_play"
+            )
+            if (not steps) and str(cfg_key) != str(card_name):
+                steps = get_card_effect_steps(
+                    self.device_state.config, card_name=str(card_name), trigger="on_play"
+                )
+            used_trigger = "on_play"
         ops = normalize_effect_steps_to_ops(steps)
 
         if ops:
@@ -91,7 +113,7 @@ class CardPlaySpecialActions:
                 pre_action_our_followers=pre_action_followers,
                 pre_action_our_follower_count=pre_action_count,
             )
-            run_result = EffectEngine.run_ops(ops, ctx=ctx, trigger_id="on_play")
+            run_result = EffectEngine.run_ops(ops, ctx=ctx, trigger_id=used_trigger)
             self._force_post_play_hand_refresh = bool(
                 getattr(ctx, "force_post_play_hand_refresh", False)
             )
@@ -102,11 +124,11 @@ class CardPlaySpecialActions:
                 bonus = 0
             self._extra_cost_bonus = int(bonus)
 
-            # 敌方随从目标选择失败时统一按“不消耗费用、本回合忽略该卡”处理。
+            # 敌方目标（随从/护符）选择失败时统一按“不消耗费用、本回合忽略该卡”处理。
             fail_kinds = list(getattr(ctx, "select_targets_fail_kinds", []) or [])
             success_kinds = set(str(k) for k in list(getattr(ctx, "select_targets_success_kinds", []) or []))
             enemy_target_failed = any(
-                str(k) == "enemy_follower" and "enemy_follower" not in success_kinds
+                str(k) in ("enemy_follower", "enemy_amulet") and str(k) not in success_kinds
                 for k in fail_kinds
             )
             if enemy_target_failed:

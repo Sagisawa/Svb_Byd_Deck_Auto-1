@@ -916,7 +916,8 @@ class CardEffectsDialog(QDialog):
             "选择触发时机，并为每个触发时机配置操作序列。\n"
             "提示：基础卡可配置通用触发；爆能档位可配置仅该档位生效的触发。\n"
             "提示：爆能档位默认继承本体同触发效果；若配置了同类效果（如同一BUFF类型）则以爆能档位覆盖。\n"
-            "提示：身材BUFF与攻击次数BUFF已拆分为两个独立操作；请分别配置。"
+            "提示：身材BUFF与攻击次数BUFF已拆分为两个独立操作；请分别配置。\n"
+            "提示：勾选“出牌时(仅桥接/读内存)”可配置读内存专属的高精度出牌与目标选择（如敌我护符、手牌精准直读），在桥接激活时优先执行。"
         )
         hint.setObjectName("SubtleText")
         hint.setProperty("muted", True)
@@ -929,17 +930,32 @@ class CardEffectsDialog(QDialog):
             enhance_notice.setWordWrap(True)
             main.addWidget(enhance_notice)
 
-        # 触发器多选区。
+        # 触发器多选区（双行布局：第一行常规触发器，第二行仅桥接/读内存触发器）。
         trigger_panel = QFrame()
         trigger_panel.setObjectName("SurfacePanel")
         trigger_panel.setProperty("card", True)
-        trig_bar = QHBoxLayout(trigger_panel)
-        trig_bar.setContentsMargins(14, 10, 14, 10)
-        trig_bar.setSpacing(14)
-        trigger_label = QLabel("触发时机")
-        trigger_label.setObjectName("SectionTitle")
-        trigger_label.setProperty("heading", "section")
-        trig_bar.addWidget(trigger_label)
+        panel_layout = QVBoxLayout(trigger_panel)
+        panel_layout.setContentsMargins(14, 10, 14, 10)
+        panel_layout.setSpacing(10)
+
+        # 第一行：通用触发时机
+        row1 = QHBoxLayout()
+        row1.setSpacing(14)
+        label_std = QLabel("触发时机")
+        label_std.setObjectName("SectionTitle")
+        label_std.setProperty("heading", "section")
+        label_std.setFixedWidth(175)
+        row1.addWidget(label_std)
+
+        # 第二行：桥接专属触发时机
+        row2 = QHBoxLayout()
+        row2.setSpacing(14)
+        label_bridge = QLabel("触发时机（仅桥接/读内存）")
+        label_bridge.setObjectName("SectionTitle")
+        label_bridge.setProperty("heading", "section")
+        label_bridge.setFixedWidth(175)
+        row2.addWidget(label_bridge)
+
         self.trig_checks: Dict[str, QCheckBox] = {}
         self.trig_groups: Dict[str, QGroupBox] = {}
         self.trig_editors: Dict[str, TriggerEditor] = {}
@@ -955,11 +971,19 @@ class CardEffectsDialog(QDialog):
 
         for t in allowed:
             tid = str(t.get("id") or "")
+            is_bridge = bool(t.get("is_bridge", False))
             cb = QCheckBox(str(t.get("label") or tid))
             cb.stateChanged.connect(lambda _v, x=tid: self._toggle_trigger(x))
-            trig_bar.addWidget(cb)
+            if is_bridge:
+                row2.addWidget(cb)
+            else:
+                row1.addWidget(cb)
             self.trig_checks[tid] = cb
-        trig_bar.addStretch()
+
+        row1.addStretch()
+        row2.addStretch()
+        panel_layout.addLayout(row1)
+        panel_layout.addLayout(row2)
         main.addWidget(trigger_panel)
 
         # 可滚动编辑内容。
@@ -979,8 +1003,9 @@ class CardEffectsDialog(QDialog):
         for t in allowed:
             tid = str(t.get("id") or "")
             ck = str(t.get("context_kind") or "")
+            display_title = str(t.get("full_label") or t.get("label") or tid)
 
-            group = QGroupBox(str(t.get("label") or tid))
+            group = QGroupBox(display_title)
             group_lay = QVBoxLayout(group)
             group_lay.setContentsMargins(12, 14, 12, 12)
             group_lay.setSpacing(8)

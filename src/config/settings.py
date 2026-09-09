@@ -60,6 +60,12 @@ DEFAULT_CONFIG = {
         "maa_threshold": 0.3,
         "page_text_fallback": True,
     },
+    "memory_reader": {
+        "enabled": False,  # 开启后优先通过 SephiesDeckLab 获取对战状态
+        "mode": "file",    # file (读取 app_session.jsonl)
+        "session_log_path": "auto",  # auto: 自动识别运行中的程序；也可指定具体路径
+        "fallback_to_vision": True,  # 内存数据无响应或超时时回退到图色识别
+    },
     "deck_rotation": {
         "enabled": False,
         "interval_matches": 5,
@@ -78,7 +84,8 @@ DEFAULT_CONFIG = {
             "name": "MuMu模拟器",
             "serial": "127.0.0.1:16384",
             "screenshot_deep_color": False,
-            "is_global": False
+            "is_global": False,
+            "screenshot_method": "wgc",
         }
     ],
     "game": {
@@ -132,6 +139,11 @@ def set_runtime_config(config):
     """注入运行时配置字典，例如 ``ConfigManager.config``。"""
     global _runtime_config
     _runtime_config = config
+
+
+def get_runtime_config():
+    """获取当前注入的运行时配置字典。"""
+    return _runtime_config
 
 
 def _extract_drag_range(config):

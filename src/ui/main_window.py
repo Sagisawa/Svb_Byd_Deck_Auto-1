@@ -50,22 +50,80 @@ from src.ui.workers.script_runner import ScriptRunner
 
 
 class DeviceConnectionChecker(QThread):
-    """后台执行的 ADB/uiautomator2 连接探测线程。"""
+    """后台执行的设备/窗口连接探测线程。"""
 
     finished_signal = pyqtSignal(bool, str, dict)
 
-    def __init__(self, serial: str, parent=None):
+    def __init__(
+        self,
+        serial: str,
+        parent=None,
+        method: str = "wgc",
+        target_hwnd: int = 0,
+        window_title: str = "",
+    ):
         super().__init__(parent)
         self.serial = str(serial or "").strip()
+        self.method = str(method or "wgc").lower()
+        self.target_hwnd = int(target_hwnd or 0)
+        self.window_title = str(window_title or "")
 
     @staticmethod
     def _is_tcp_serial(serial: str) -> bool:
         return bool(re.match(r"^[^:\s]+:\d+$", str(serial or "").strip()))
 
     def run(self) -> None:
-        serial = self.serial
         if self.isInterruptionRequested():
             return
+
+        # 1. Windows 原生后台模式（免 ADB）
+        if self.method != "adb":
+            try:
+                from src.device.wgc import (
+                    find_target_window,
+                    get_window_text,
+                    is_window_valid_and_visible,
+                )
+                import ctypes
+                from src.device.wgc.window_utils import RECT, user32
+
+                hwnd = 0
+                title = ""
+                if self.target_hwnd and is_window_valid_and_visible(self.target_hwnd):
+                    hwnd = self.target_hwnd
+                    title = get_window_text(self.target_hwnd)
+                else:
+                    hwnd, title = find_target_window(title_pattern=self.window_title)
+
+                if self.isInterruptionRequested():
+                    return
+
+                if not hwnd or not is_window_valid_and_visible(hwnd):
+                    self.finished_signal.emit(
+                        False, "未检测到运行中的《影之诗》游戏或模拟器窗口，请确认窗口已打开且未最小化", {}
+                    )
+                    return
+
+                rect = RECT()
+                user32.GetClientRect(hwnd, ctypes.byref(rect))
+                info = {
+                    "connected": True,
+                    "serial": f"HWND:{hwnd}",
+                    "model": "Windows 原生游戏窗口",
+                    "resolution": f"{rect.width}×{rect.height}",
+                    "status": "已连接",
+                    "target_hwnd": hwnd,
+                    "window_title": title,
+                }
+                detail = f"成功绑定 Windows 游戏窗口: {title} (HWND: {hwnd}, 后台免鼠标)"
+                self.finished_signal.emit(True, detail, info)
+                return
+            except Exception as exc:
+                self.finished_signal.emit(False, f"窗口连接检测异常: {exc}", {})
+                return
+
+        # 2. 传统 ADB 模式
+        serial = self.serial
         if not serial:
             self.finished_signal.emit(False, "设备序列号为空", {})
             return
@@ -114,6 +172,7 @@ class DeviceConnectionChecker(QThread):
                 or "Android 设备"
             )
             info = {
+                "connected": True,
                 "serial": serial,
                 "model": str(model),
                 "resolution": f"{width}×{height}" if width and height else "未知分辨率",
@@ -125,24 +184,50 @@ class DeviceConnectionChecker(QThread):
         except Exception as exc:
             self.finished_signal.emit(False, f"设备连接检测异常: {exc}", {})
 
-
 class ScreenshotWorker(QThread):
     finished_signal = pyqtSignal(bool, str, object)
 
-    def __init__(self, serial: str, parent=None):
+    def __init__(
+        self,
+        serial: str,
+        parent=None,
+        method: str = "wgc",
+        target_hwnd: int = 0,
+        window_title: str = "",
+    ):
         super().__init__(parent)
         self.serial = str(serial or "").strip()
+        self.method = str(method or "wgc").lower()
+        self.target_hwnd = int(target_hwnd or 0)
+        self.window_title = str(window_title or "")
 
     def run(self) -> None:
         try:
             if self.isInterruptionRequested():
                 return
-            import uiautomator2 as u2
+            image = None
+            if self.method == "wgc":
+                try:
+                    from src.device.wgc import WgcCapture
+                    cap = WgcCapture(
+                        target_hwnd=self.target_hwnd,
+                        title_keyword=self.window_title,
+                    )
+                    if cap.start():
+                        image = cap.get_screenshot(timeout=1.0)
+                        cap.close()
+                except Exception:
+                    image = None
+            if image is None:
+                if self.isInterruptionRequested():
+                    return
+                import uiautomator2 as u2
 
-            device = u2.connect(self.serial)
-            if self.isInterruptionRequested():
-                return
-            image = device.screenshot()
+                device = u2.connect(self.serial)
+                if self.isInterruptionRequested():
+                    return
+                image = device.screenshot()
+
             if self.isInterruptionRequested():
                 return
             if image is None:
@@ -159,7 +244,6 @@ class ScreenshotWorker(QThread):
             self.finished_signal.emit(True, "截图获取成功", qimage)
         except Exception as exc:
             self.finished_signal.emit(False, f"截图获取失败: {exc}", None)
-
 
 class LogSink:
     """兼容旧页面调用 ``parent.log_output.append`` 的适配器。"""
@@ -180,6 +264,7 @@ class ShadowverseUI(QMainWindow):
         self._device_check_thread: Optional[DeviceConnectionChecker] = None
         self._screenshot_thread: Optional[ScreenshotWorker] = None
         self._screenshot_purpose = "preview"
+        self._preview_dialog = None
         self.script_thread: Optional[ScriptRunner] = None
         self._device_config: Optional[Dict[str, Any]] = None
         self._start_after_connect = False
@@ -460,26 +545,34 @@ class ShadowverseUI(QMainWindow):
 
         values = self.dashboard_page.connection_values()
         serial = str(values.get("serial") or "").strip()
-        if not serial:
+        method = str(values.get("screenshot_method") or "wgc").lower()
+        target_hwnd = int(values.get("target_hwnd", 0) or 0)
+        win_title = str(values.get("wgc_window_title", "") or "")
+
+        if method == "adb" and not serial:
             self._start_after_connect = False
             QMessageBox.warning(self, "ADB 地址为空", "请输入模拟器 ADB 地址。")
             return
 
-        self.append_log(f"正在连接设备: {serial}...")
+        log_desc = f"游戏窗口: {win_title or '自动匹配'}" if method != "adb" else f"ADB 设备: {serial}"
+        self.append_log(f"正在连接目标 ({log_desc})...")
         self.state.set_run_status("connecting")
         self.state.set_device(
             connected=False,
-            serial=serial,
+            serial=serial or (f"HWND:{target_hwnd}" if target_hwnd else "Windows原生"),
             server=values.get("server"),
             status="连接中",
-            message="正在检查 ADB 和 uiautomator2 连接",
+            message=f"正在绑定并检查 {log_desc}",
         )
 
         self._device_config = {
-            "name": f"模拟器-{serial}",
+            "name": f"游戏窗口-{target_hwnd or '原生'}" if method != "adb" else f"模拟器-{serial}",
             "serial": serial,
             "is_global": bool(values.get("is_global")),
             "screenshot_deep_color": bool(values.get("screenshot_deep_color")),
+            "screenshot_method": method,
+            "target_hwnd": target_hwnd,
+            "wgc_window_title": win_title,
             "gala_mode": bool(values.get("gala_mode")),
         }
         self._auto_pass = bool(values.get("enable_auto_pass"))
@@ -493,11 +586,18 @@ class ShadowverseUI(QMainWindow):
         self.script_thread.status_signal.connect(self.update_status)
         self.script_thread.stats_signal.connect(self.update_stats)
 
-        self._device_check_thread = DeviceConnectionChecker(serial, self)
+        self._device_check_thread = DeviceConnectionChecker(
+            serial,
+            self,
+            method=method,
+            target_hwnd=target_hwnd,
+            window_title=win_title,
+        )
         self._device_check_thread.finished_signal.connect(
             self._on_device_connection_checked
         )
         self._device_check_thread.start()
+        return
 
     def _save_device_config(self, values: Dict[str, Any]) -> None:
         try:
@@ -513,6 +613,9 @@ class ShadowverseUI(QMainWindow):
                 "serial": serial,
                 "is_global": bool(values.get("is_global")),
                 "screenshot_deep_color": bool(values.get("screenshot_deep_color")),
+                "screenshot_method": str(values.get("screenshot_method") or "wgc"),
+                "target_hwnd": int(values.get("target_hwnd", 0) or 0),
+                "wgc_window_title": str(values.get("wgc_window_title", "") or ""),
                 "gala_mode": bool(values.get("gala_mode")),
             }
             devices = existing.get("devices")
@@ -530,6 +633,12 @@ class ShadowverseUI(QMainWindow):
             if not found:
                 updated_devices.append(device_update)
 
+            memory_reader_update = {
+                "enabled": bool(values.get("memory_reader_enabled", True)),
+            }
+            if "session_log_path" in values:
+                memory_reader_update["session_log_path"] = str(values.get("session_log_path") or "auto")
+
             result = repo.update(
                 {
                     "devices": updated_devices,
@@ -537,6 +646,7 @@ class ShadowverseUI(QMainWindow):
                     "auto_restart": {
                         "enabled": bool(values.get("auto_restart_enabled"))
                     },
+                    "memory_reader": memory_reader_update,
                 },
                 refuse_on_parse_error=True,
                 indent=4,
@@ -544,6 +654,15 @@ class ShadowverseUI(QMainWindow):
             )
             if not result.ok:
                 raise RuntimeError(result.error or "配置写入失败")
+
+            session_log_path = str(values.get("session_log_path") or "auto")
+            try:
+                from src.bridge import get_global_tracker_bridge
+
+                get_global_tracker_bridge().set_log_path(session_log_path)
+            except Exception:
+                pass
+
             self.append_log("设备与快捷设置已保存到 config.json")
         except Exception as exc:
             self.append_log(f"保存设备配置失败: {exc}")
@@ -597,34 +716,42 @@ class ShadowverseUI(QMainWindow):
             return
 
         values = self.dashboard_page.connection_values()
+        method = str(values.get("screenshot_method") or "wgc").lower()
+        target_hwnd = int(values.get("target_hwnd", 0) or 0)
+        win_title = str(values.get("wgc_window_title", "") or "")
         requested_serial = str(values.get("serial") or "").strip()
-        if not requested_serial:
-            QMessageBox.warning(self, "ADB 地址为空", "请输入模拟器 ADB 地址。")
-            return
 
-        connected_serial = str((self._device_config or {}).get("serial") or "")
+        connected_target = (
+            int((self._device_config or {}).get("target_hwnd", 0) or 0)
+            if method != "adb"
+            else str((self._device_config or {}).get("serial") or "")
+        )
+        current_target = target_hwnd if method != "adb" else requested_serial
+
         connection_ready = bool(
             self.state.device.get("connected")
             and self.script_thread is not None
-            and requested_serial == connected_serial
+            and (current_target == connected_target or current_target == 0)
         )
         if not connection_ready:
-            self.append_log(f"[控制] 开始运行前先连接设备: {requested_serial}")
+            self.append_log(f"[控制] 开始运行前先绑定游戏窗口: {win_title or '自动检测'}")
             self.connect_device(start_after_connect=True)
             return
 
         if self._device_config is not None:
             self._device_config.update(
                 {
-                    "name": f"模拟器-{connected_serial}",
+                    "name": f"游戏窗口-{target_hwnd or '原生'}" if method != "adb" else f"模拟器-{requested_serial}",
                     "is_global": bool(values.get("is_global")),
                     "screenshot_deep_color": bool(
                         values.get("screenshot_deep_color")
                     ),
+                    "screenshot_method": str(values.get("screenshot_method") or "wgc"),
+                    "target_hwnd": int(values.get("target_hwnd", 0) or 0),
+                    "wgc_window_title": str(values.get("wgc_window_title", "") or ""),
                     "gala_mode": bool(values.get("gala_mode")),
                 }
             )
-        self.state.set_device(server=values.get("server"))
         self._save_device_config(values)
         self.state.set_elapsed(0)
         self.state.set_battle_count(0)
@@ -710,28 +837,48 @@ class ShadowverseUI(QMainWindow):
             self.statistics_page.refresh_stats()
 
     def show_screenshot_preview(self) -> None:
-        serial = str(self.dashboard_page.connection_values().get("serial") or "")
-        if not serial:
+        values = self.dashboard_page.connection_values()
+        serial = str(values.get("serial") or "")
+        method = str(values.get("screenshot_method") or "wgc")
+        if not serial and method != "wgc":
             return
         if self._screenshot_thread is not None and self._screenshot_thread.isRunning():
             return
         self._screenshot_purpose = "preview"
-        self.append_log("[设备] 正在获取截图预览...")
-        self._screenshot_thread = ScreenshotWorker(serial, self)
+        target_hwnd = int(values.get("target_hwnd", 0) or 0)
+        win_title = str(values.get("wgc_window_title", "") or "")
+        self.append_log(f"[设备] 正在获取截图预览 ({method.upper()})...")
+        self._screenshot_thread = ScreenshotWorker(
+            serial,
+            self,
+            method=method,
+            target_hwnd=target_hwnd,
+            window_title=win_title,
+        )
         self._screenshot_thread.finished_signal.connect(self._on_screenshot_ready)
         self._screenshot_thread.start()
 
     def capture_deck_qr_from_device(self) -> None:
-        serial = str(self.dashboard_page.connection_values().get("serial") or "")
-        if not serial:
+        values = self.dashboard_page.connection_values()
+        serial = str(values.get("serial") or "")
+        method = str(values.get("screenshot_method") or "wgc")
+        if not serial and method != "wgc":
             QMessageBox.warning(self, "设备未配置", "请先在仪表盘填写设备序列号。")
             return
         if self._screenshot_thread is not None and self._screenshot_thread.isRunning():
             QMessageBox.information(self, "截图进行中", "已有一个设备截图任务正在执行。")
             return
         self._screenshot_purpose = "deck_qr"
-        self.append_log("[二维码] 正在读取当前游戏画面...")
-        self._screenshot_thread = ScreenshotWorker(serial, self)
+        target_hwnd = int(values.get("target_hwnd", 0) or 0)
+        win_title = str(values.get("wgc_window_title", "") or "")
+        self.append_log(f"[二维码] 正在读取当前游戏画面 ({method.upper()})...")
+        self._screenshot_thread = ScreenshotWorker(
+            serial,
+            self,
+            method=method,
+            target_hwnd=target_hwnd,
+            window_title=win_title,
+        )
         self._screenshot_thread.finished_signal.connect(self._on_screenshot_ready)
         self._screenshot_thread.start()
 
@@ -743,27 +890,20 @@ class ShadowverseUI(QMainWindow):
         elif ok and isinstance(image, QImage) and purpose == "deck_qr":
             self.deck_workspace_page.import_qr_qimage(image)
         elif ok and isinstance(image, QImage):
-            dialog = QDialog(self)
-            dialog.setWindowTitle("设备截图预览")
-            dialog.resize(900, 600)
-            layout = QVBoxLayout(dialog)
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            label = QLabel()
-            label.setAlignment(Qt.AlignCenter)
-            label.setPixmap(
-                QPixmap.fromImage(image).scaled(
-                    860,
-                    540,
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
-            )
-            scroll.setWidget(label)
-            layout.addWidget(scroll)
-            dialog.exec_()
+            if hasattr(self, "_preview_dialog") and self._preview_dialog is not None and self._preview_dialog.isVisible():
+                self._preview_dialog.update_image(image)
+            else:
+                from src.ui.dialogs.annotated_preview_dialog import AnnotatedPreviewDialog
+
+                self._preview_dialog = AnnotatedPreviewDialog(self, initial_image=image)
+                self._preview_dialog.refresh_requested.connect(self.show_screenshot_preview)
+                self._preview_dialog.exec_()
+                self._preview_dialog = None
         elif not ok:
-            QMessageBox.warning(self, "截图失败", message)
+            if hasattr(self, "_preview_dialog") and self._preview_dialog is not None and self._preview_dialog.isVisible():
+                self._preview_dialog.status_label.setText(f"截图失败: {message}")
+            else:
+                QMessageBox.warning(self, "截图失败", message)
         if self._screenshot_thread is not None:
             self._screenshot_thread.deleteLater()
         self._screenshot_thread = None

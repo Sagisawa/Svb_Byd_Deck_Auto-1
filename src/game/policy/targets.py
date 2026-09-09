@@ -22,6 +22,10 @@ def _safe_int(v: Any, default: int = 0) -> int:
 def _enemy_hp_key(follower: Sequence[Any]) -> int:
     # 旧版敌方随从元组结构：``(x, y, type, hp_str)``。
     try:
+        if len(follower) > 2 and str(follower[2]) == "amulet":
+            return -1
+        if len(follower) > 5 and bool(follower[5]):
+            return -1
         hp = follower[3]
     except Exception:
         return 0
@@ -162,6 +166,10 @@ class TargetSelector:
         limit = _safe_int(max_hp, 0)
         candidates: List[Sequence[Any]] = []
         for f in enemy_followers:
+            if len(f) > 2 and str(f[2]) == "amulet":
+                continue
+            if len(f) > 5 and bool(f[5]):
+                continue
             try:
                 hp = f[3]
             except Exception:
@@ -187,6 +195,10 @@ class TargetSelector:
         limit = _safe_int(max_hp, 0)
         candidates: List[Sequence[Any]] = []
         for f in enemy_followers:
+            if len(f) > 2 and str(f[2]) == "amulet":
+                continue
+            if len(f) > 5 and bool(f[5]):
+                continue
             try:
                 hp = f[3]
             except Exception:
@@ -239,6 +251,10 @@ class TargetSelector:
         named: List[Sequence[Any]] = []
         unnamed: List[Sequence[Any]] = []
         for f in our_followers:
+            if len(f) > 2 and str(f[2]) == "amulet":
+                continue
+            if len(f) > 5 and bool(f[5]):
+                continue
             name = None
             if len(f) > 3:
                 name = f[3]

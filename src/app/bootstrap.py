@@ -206,6 +206,19 @@ def run_cli(
         device_manager = DeviceManager(
             config_manager, notification_manager, log_queue=log_queue
         )
+        # 若启用了内存状态读取 (SephiesDeckLab)，启动后台日志监听桥接
+        mem_cfg = config_manager.config.get("memory_reader", {})
+        bridge_handle = None
+        if isinstance(mem_cfg, dict) and mem_cfg.get("enabled"):
+            try:
+                from src.bridge import get_global_tracker_bridge
+
+                log_path = mem_cfg.get("session_log_path")
+                bridge_handle = get_global_tracker_bridge(log_path=log_path)
+                bridge_handle.start()
+                logger.info("已启动 SephiesDeckLab 内存状态桥接服务")
+            except Exception as e:
+                logger.warning(f"启动内存状态桥接服务失败: {e}")
 
         # 启动设备处理
         device_manager.start_all_devices()
@@ -239,6 +252,11 @@ def run_cli(
             command_stop_event.set()
         if command_thread is not None and command_thread.is_alive():
             command_thread.join()
+        if bridge_handle is not None:
+            try:
+                bridge_handle.stop()
+            except Exception:
+                pass
 
 
 def run_gui(argv: Optional[list[str]] = None) -> int:

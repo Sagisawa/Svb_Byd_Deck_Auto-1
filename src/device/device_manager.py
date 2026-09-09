@@ -43,10 +43,11 @@ class DeviceManager:
         logger.info(f"发现 {len(devices)} 个设备配置")
 
         for device_config in devices:
-            serial = device_config.get("serial")
+            serial = str(device_config.get("serial") or "").strip()
             if not serial:
-                logger.error("设备配置缺少serial字段")
-                continue
+                target_hwnd = device_config.get("target_hwnd")
+                serial = f"HWND_{target_hwnd}" if target_hwnd else "Windows原生"
+                device_config["serial"] = serial
 
             # 创建设备状态
             device_state = DeviceState(
@@ -161,10 +162,60 @@ class DeviceManager:
         logger.info(f"设备 {serial} 工作线程结束")
 
     def _connect_device(self, device_config: Dict[str, Any], device_state: DeviceState) -> bool:
-        """连接设备"""
-        serial = device_config["serial"]
+        """连接目标设备或游戏窗口（优先免 ADB 的 Windows 原生后台模式）。"""
+        method = str(device_config.get("screenshot_method", "wgc")).lower()
+        target_hwnd = int(device_config.get("target_hwnd", 0) or 0)
+        title_keyword = device_config.get("wgc_window_title")
+        serial = str(device_config.get("serial") or "").strip()
+
+        # ========== 1. Windows 原生后台模式（默认，免 ADB） ==========
+        if method != "adb":
+            from src.device.wgc import (
+                WgcCapture,
+                find_target_window,
+                get_window_text,
+                is_window_valid_and_visible,
+            )
+            from src.device.windows_input import WindowsInputProxy
+
+            hwnd = 0
+            title = ""
+            if target_hwnd and is_window_valid_and_visible(target_hwnd):
+                hwnd = target_hwnd
+                title = get_window_text(target_hwnd)
+            else:
+                hwnd, title = find_target_window(title_pattern=title_keyword)
+
+            if hwnd and is_window_valid_and_visible(hwnd):
+                # 绑定 Windows 原生后台输入代理
+                proxy = WindowsInputProxy(hwnd, logger_instance=device_state.logger)
+                device_state.u2_device = device_state.wrap_u2_device(proxy)
+                device_state.target_hwnd = hwnd
+                device_state.window_title = title
+
+                # 启动 WGC 捕获器
+                if device_state.wgc_capture is None:
+                    device_state.wgc_capture = WgcCapture(
+                        target_hwnd=hwnd,
+                        title_keyword=title,
+                        logger_instance=device_state.logger,
+                    )
+                device_state.wgc_capture.start(hwnd)
+
+                device_state.logger.info(
+                    f"[Windows 原生后台] 成功绑定目标游戏窗口: HWND={hwnd}, 标题='{title}' (免ADB)"
+                )
+                return True
+            else:
+                device_state.logger.warning(
+                    "未检测到游戏窗口，请先打开《影之诗》游戏或安卓模拟器..."
+                )
+                time.sleep(3)
+                return False
+
+        # ========== 2. 传统 ADB 模式回退 ==========
         max_retries = 5
-        retry_delay = 10
+        retry_delay = 5
 
         def _is_tcp_serial(value: str) -> bool:
             return bool(re.match(r"^[^:\s]+:\d+$", str(value or "").strip()))
@@ -182,27 +233,23 @@ class DeviceManager:
                     except Exception as e:
                         logger.warning(f"adb connect {serial} 失败: {e}")
 
-                # 直接连接设备
                 adb_device = adb.device(serial)
                 if adb_device is None:
                     raise RuntimeError(f"无法连接设备: {serial}")
 
-                # 同时返回 u2 设备对象
                 u2_device = u2.connect(serial)
                 device_state.u2_device = device_state.wrap_u2_device(u2_device)
                 device_state.adb_device = adb_device
 
-                logger.info(f"已连接设备: {serial}")
+                logger.info(f"已连接 ADB 设备: {serial}")
                 return True
-
             except Exception as e:
                 if attempt < max_retries:
-                    logger.warning(f"连接设备 {serial} 失败，重试 {attempt}/{max_retries}。错误: {str(e)}")
+                    logger.warning(f"连接 ADB 设备 {serial} 失败，重试 {attempt}/{max_retries}。错误: {str(e)}")
                     time.sleep(retry_delay)
                 else:
-                    logger.error(f"设备连接失败: {serial}")
+                    logger.error(f"ADB 设备连接失败: {serial}")
                     return False
-
         return False
 
     def _run_device_loop(self, device_state: DeviceState, game_manager: GameManager):
@@ -374,6 +421,11 @@ class DeviceManager:
                 deck_rotation.close()
         except Exception as exc:
             device_state.logger.debug("清理卡组轮换运行缓存失败: %s", exc)
+
+        try:
+            device_state.close_wgc()
+        except Exception:
+            pass
 
         # 显示运行总结
         summary = device_state.get_run_summary()

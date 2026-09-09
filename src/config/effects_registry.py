@@ -16,26 +16,66 @@ TRIGGERS: List[Dict[str, Any]] = [
     {
         "id": "on_play",
         "label": "出牌时",
+        "full_label": "出牌时",
         "short": "play",
         "context_kind": CONTEXT_HAND_CARD,
+        "is_bridge": False,
     },
     {
         "id": "on_attack",
         "label": "攻击时",
+        "full_label": "攻击时",
         "short": "atk",
         "context_kind": CONTEXT_FOLLOWER,
+        "is_bridge": False,
     },
     {
         "id": "on_evolve",
         "label": "进化时",
+        "full_label": "进化时",
         "short": "evo",
         "context_kind": CONTEXT_FOLLOWER,
+        "is_bridge": False,
     },
     {
         "id": "on_super_evolve",
         "label": "超进化时",
+        "full_label": "超进化时",
         "short": "sevo",
         "context_kind": CONTEXT_FOLLOWER,
+        "is_bridge": False,
+    },
+    {
+        "id": "on_play_bridge",
+        "label": "出牌时",
+        "full_label": "出牌时 (仅桥接/读内存)",
+        "short": "b_play",
+        "context_kind": CONTEXT_HAND_CARD,
+        "is_bridge": True,
+    },
+    {
+        "id": "on_attack_bridge",
+        "label": "攻击时",
+        "full_label": "攻击时 (仅桥接/读内存)",
+        "short": "b_atk",
+        "context_kind": CONTEXT_FOLLOWER,
+        "is_bridge": True,
+    },
+    {
+        "id": "on_evolve_bridge",
+        "label": "进化时",
+        "full_label": "进化时 (仅桥接/读内存)",
+        "short": "b_evo",
+        "context_kind": CONTEXT_FOLLOWER,
+        "is_bridge": True,
+    },
+    {
+        "id": "on_super_evolve_bridge",
+        "label": "超进化时",
+        "full_label": "超进化时 (仅桥接/读内存)",
+        "short": "b_sevo",
+        "context_kind": CONTEXT_FOLLOWER,
+        "is_bridge": True,
     },
 ]
 
@@ -53,6 +93,8 @@ TARGET_KINDS: List[Dict[str, Any]] = [
         "label": "敌方随从",
         "selectors": [
             {"id": "highest_hp", "label": "血量最高", "params_schema": []},
+            {"id": "lowest_hp", "label": "血量最低", "params_schema": []},
+            {"id": "highest_atk", "label": "攻击力最高", "params_schema": []},
             {
                 "id": "hp_leq",
                 "label": "HP<=X(取最大)",
@@ -108,6 +150,15 @@ TARGET_KINDS: List[Dict[str, Any]] = [
         ],
     },
     {
+        "kind": "enemy_amulet",
+        "label": "敌方护符",
+        "selectors": [
+            {"id": "any", "label": "任意敌方护符", "params_schema": []},
+            {"id": "highest_countdown", "label": "倒计时最高", "params_schema": []},
+            {"id": "lowest_countdown", "label": "倒计时最低", "params_schema": []},
+        ],
+    },
+    {
         "kind": "friendly_follower",
         "label": "我方随从",
         "selectors": [
@@ -122,7 +173,18 @@ TARGET_KINDS: List[Dict[str, Any]] = [
                         "default": True,
                     }
                 ],
-            }
+            },
+            {"id": "highest_atk", "label": "攻击力最高", "params_schema": []},
+            {"id": "lowest_hp", "label": "血量最低", "params_schema": []},
+        ],
+    },
+    {
+        "kind": "friendly_amulet",
+        "label": "我方护符",
+        "selectors": [
+            {"id": "any", "label": "任意我方护符", "params_schema": []},
+            {"id": "highest_countdown", "label": "倒计时最高", "params_schema": []},
+            {"id": "lowest_countdown", "label": "倒计时最低", "params_schema": []},
         ],
     },
 ]

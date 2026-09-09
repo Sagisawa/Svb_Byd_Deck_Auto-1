@@ -55,6 +55,20 @@ class HandCardManager:
                 - name: str 卡牌名称
                 - confidence: float 匹配置信度
         """
+        # 优先通过内存桥接获取确切的手牌数据与计算坐标
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                mem_cards = mem_adapter.get_hand_cards()
+                if mem_cards:
+                    if not silent:
+                        card_info = [f"{c['cost']}费_{c['name']}" for c in mem_cards]
+                        logger.info(f"[内存] 手牌详情: {' | '.join(card_info)}")
+                    return mem_cards
+        except Exception:
+            pass
+
         try:
             # 使用SIFT识别手牌
             recognized_cards = self.sift_recognition.recognize_hand_cards(

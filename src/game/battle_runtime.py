@@ -523,8 +523,13 @@ class BattleRuntimeState:
         ftype = str(item[2] if len(item) > 2 else "normal")
 
         raw_name = ""
-        if len(item) > 3 and isinstance(item[3], str):
-            raw_name = str(item[3] or "")
+        if str(side) == "ours":
+            if len(item) > 3 and isinstance(item[3], str):
+                raw_name = str(item[3] or "")
+        else:
+            # 敌方槽位：若提供了第5项（item[4] 为卡牌名称），则解析为敌方卡名
+            if len(item) > 4 and isinstance(item[4], str) and item[4]:
+                raw_name = str(item[4] or "")
 
         parsed_base = ""
         parsed_atk = None
@@ -534,9 +539,6 @@ class BattleRuntimeState:
             parsed_base = str(parsed_base or raw_name)
 
         norm_base = normalize_card_base_name(parsed_base)
-        if str(side) != "ours":
-            # 敌方槽位 ``item[3]`` 通常是血量文本，不能作为可靠名称。
-            norm_base = ""
 
         return {
             "x": int(x),

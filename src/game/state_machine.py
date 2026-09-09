@@ -366,7 +366,7 @@ class GameStateMachine:
                         center_x + random.randint(-2, 2),
                         center_y + random.randint(-2, 2),
                     )
-                    device_state.sleep(3)
+                    device_state.sleep(2.0)
                     device_state.logger.debug(
                         f"调用start_new_match后 - in_match: {device_state.in_match}"
                     )
@@ -387,7 +387,7 @@ class GameStateMachine:
                         center_x + random.randint(-2, 2),
                         center_y + random.randint(-2, 2),
                     )
-                    device_state.sleep(1)
+                    device_state.sleep(0.5)
                     continue
 
                 if key == "decision":
@@ -407,7 +407,7 @@ class GameStateMachine:
                         )
 
                         # 等待换牌界面卡牌动画完成
-                        device_state.sleep(0.4)
+                        device_state.sleep(0.5)
 
                         # Step3D 运行时只保留一条规范换牌路径。
                         success = game_manager.game_actions._detect_change_card_sift()
@@ -419,7 +419,7 @@ class GameStateMachine:
                     else:
                         device_state.logger.info("本局换牌已执行，跳过重复换牌")
 
-                    device_state.sleep(0.5)
+                    device_state.sleep(0.3)
                     center_x = max_loc[0] + matched_w // 2
                     center_y = max_loc[1] + matched_h // 2
                     u2_device.click(
@@ -427,7 +427,7 @@ class GameStateMachine:
                         center_y + random.randint(-2, 2),
                     )
                     # 避免decision界面残留导致下一轮再次执行换牌。
-                    device_state.sleep(3)
+                    device_state.sleep(1.0)
                     break
 
                 if key == "end_round":

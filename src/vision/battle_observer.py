@@ -177,8 +177,16 @@ class BattleObserver:
             self.device_state.logger.debug("战斗状态截图转换失败: %s", exc)
             return None
 
-        enemy_hp = self.recognition.read_integer(image, ENEMY_LEADER_HP_ROI, maximum=99)
-        our_hp = self.recognition.read_integer(image, OUR_LEADER_HP_ROI, maximum=99)
+        # 优先通过内存桥接读取主战者HP
+        from src.bridge.helper import get_memory_adapter
+        mem_adapter = get_memory_adapter()
+        if mem_adapter and mem_adapter.is_available():
+            mem_our_hp, mem_enemy_hp = mem_adapter.get_leader_hp()
+            our_hp = mem_our_hp if mem_our_hp is not None else self.recognition.read_integer(image, OUR_LEADER_HP_ROI, maximum=99)
+            enemy_hp = mem_enemy_hp if mem_enemy_hp is not None else self.recognition.read_integer(image, ENEMY_LEADER_HP_ROI, maximum=99)
+        else:
+            enemy_hp = self.recognition.read_integer(image, ENEMY_LEADER_HP_ROI, maximum=99)
+            our_hp = self.recognition.read_integer(image, OUR_LEADER_HP_ROI, maximum=99)
 
         enemy_observations: list[FollowerObservation] = []
         try:
@@ -250,6 +258,15 @@ class BattleObserver:
             button_detected=extra_point is not None,
             device_state=self.device_state,
         )
+        if mem_adapter:
+            mem_pp_curr, mem_pp_max = mem_adapter.get_pp_status()
+            pp_current = mem_pp_curr if mem_pp_curr is not None else pp_current
+            pp_maximum = mem_pp_max if mem_pp_max is not None else pp_maximum
+            mem_ep, mem_sep = mem_adapter.get_ep_status()
+            if mem_ep is not None:
+                ep = mem_ep
+            if mem_sep is not None:
+                sep = mem_sep
 
         observation = BattleObservation(
             captured_at=time.time(),

@@ -272,6 +272,17 @@ class GameManager:
             - "normal"：随从类型；为兼容旧调用方固定返回 "normal"
             - hp_value：字符串形式的生命值，例如 "5"、"99"
         """
+        # 优先通过内存桥接获取确切的敌方随从
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                mem_enemies = mem_adapter.get_enemy_followers()
+                if mem_enemies is not None:
+                    return mem_enemies
+        except Exception:
+            pass
+
         timestamp = int(time.time() * 1000)
         hp_region = ENEMY_HP_REGION
         if is_select:
@@ -410,6 +421,18 @@ class GameManager:
             sort_desc: True=按x坐标从右到左排序；False=从左到右排序
             shot_delay_range: 保留参数（单帧模式下不使用）
         """
+        # 优先通过内存桥接获取确切的我方随从与行动状态
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                mem_ours = mem_adapter.get_our_followers()
+                if mem_ours is not None:
+                    mem_ours.sort(key=lambda item: item[0], reverse=sort_desc)
+                    return mem_ours
+        except Exception:
+            pass
+
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         base_shot = screenshot
@@ -1288,6 +1311,16 @@ class GameManager:
 
     def scan_shield_targets(self, debug_flag=False):
         """扫描护盾（三帧检测，2/3 命中才判定为真守护）。"""
+        # 优先通过内存桥接获取确切的守护随从位置
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                mem_shields = mem_adapter.get_shield_targets()
+                if mem_shields is not None:
+                    return mem_shields
+        except Exception:
+            pass
 
         shot_results = []
         max_shots = 3
@@ -1365,6 +1398,17 @@ class GameManager:
         - enemy_followers 来自同一张 screenshot 的 HP 扫描结果
         - wards 直接按 x 轴映射到 enemy_followers，避免跨帧错配
         """
+
+        # 优先通过内存桥接获取确切的守护随从位置
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                mem_shields = mem_adapter.get_shield_targets()
+                if mem_shields is not None:
+                    return mem_shields
+        except Exception:
+            pass
 
         if screenshot is None or not enemy_followers:
             return []

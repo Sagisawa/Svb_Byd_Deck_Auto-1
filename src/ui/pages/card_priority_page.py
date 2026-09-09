@@ -143,8 +143,8 @@ class CardPriorityPage(QWidget):
             if not tid:
                 continue
 
-        # ``on_play`` 按支持爆能的手牌配置键索引；随从触发器按基础随从名索引。
-            if tid == "on_play":
+            # ``on_play`` 与 ``on_play_bridge`` 按支持爆能的手牌配置键索引；随从触发器按基础随从名索引。
+            if tid in ("on_play", "on_play_bridge"):
                 key = str(config_key or base_name)
             else:
                 if is_enhance:

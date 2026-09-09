@@ -122,7 +122,6 @@ claude.md
 AI_Reference
 migration_backups
 /quanka
-.gitignore
 # OpenCode deepwork session notes
 .slim/deepwork/
 

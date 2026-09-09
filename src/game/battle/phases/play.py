@@ -22,10 +22,9 @@ class PlayPhase:
             return False
 
         ok = self.actions._play_cards(image)
-    # 等待出牌后的召唤、效果和增益动画稳定，再进入进化或攻击扫描。下方空白区域
-    # 点击还会等待 0.5 秒，因此出牌后的总稳定时间为 2 秒。
-        ds.sleep(1.5)
+        # 等待出牌后的召唤、效果和增益动画稳定，再进入进化或攻击扫描。画面静止后立刻继续
+        ds.wait_for_screen_stable(timeout=10.0, desc="出牌场面稳定")
 
         # 点击空白处关闭面板
-        self.actions._click_blank_panel(sleep_seconds=0.5)
+        self.actions._click_blank_panel(sleep_seconds=0.2)
         return bool(ok)

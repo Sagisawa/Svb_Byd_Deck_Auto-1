@@ -100,10 +100,24 @@ class OperationExecutor:
         gt_option_i = _safe_int(gt_option, 2)
 
         pre_count = getattr(ctx, "pre_action_our_follower_count", None)
+        follower_count = None
+        source = "pre_action"
         if pre_count is not None:
             follower_count = _safe_int(pre_count, 0)
-            source = "pre_action"
         else:
+            # 优先从内存读取当前场上我方随从数
+            try:
+                from src.bridge.helper import get_memory_adapter
+                mem_adapter = get_memory_adapter()
+                if mem_adapter and mem_adapter.is_available():
+                    ours = mem_adapter.get_our_followers()
+                    if ours is not None:
+                        follower_count = len([f for f in ours if len(f) >= 3 and str(f[2]) != "amulet"])
+                        source = "memory_bridge"
+            except Exception:
+                follower_count = None
+
+        if follower_count is None:
             try:
                 ds.logger.warning(
                     "[Effect] select_option_by_our_followers skipped: "
@@ -142,6 +156,63 @@ class OperationExecutor:
         u2_device = _get_u2_device(ds)
         if u2_device is None:
             return False
+
+        # 优先使用内存直读手牌进行零延迟、100% 精确的卡牌定位与点击
+        try:
+            from src.bridge.helper import get_memory_adapter
+            mem_adapter = get_memory_adapter()
+            if mem_adapter and mem_adapter.is_available():
+                mem_cards = mem_adapter.get_hand_cards()
+                if mem_cards:
+                    normalized_mem_cards = [
+                        (c, _normalize_card_name_for_match(c.get("name") or ""))
+                        for c in mem_cards
+                        if isinstance(c, dict)
+                    ]
+                    # 1. 优先按用户配置优先级寻找目标
+                    for want, want_norm in zip(priorities, normalized_priorities):
+                        if not want_norm:
+                            continue
+                        for card, card_norm in normalized_mem_cards:
+                            if card_norm == want_norm:
+                                center = card.get("center")
+                                if center and len(center) == 2:
+                                    x, y = int(center[0]), int(center[1])
+                                    try:
+                                        ds.logger.info(
+                                            f"[内存][Effect] select_hand_card 命中优先卡牌: {want} ({x},{y})"
+                                        )
+                                    except Exception:
+                                        pass
+                                    time.sleep(0.2)
+                                    u2_device.click(x, y)
+                                    time.sleep(0.4)
+                                    return True
+                    # 2. 未命中特定优先级时，兜底选择第一张（最左侧）手牌
+                    sorted_mem = sorted(
+                        normalized_mem_cards,
+                        key=lambda it: it[0].get("center", (0, 0))[0] if it[0].get("center") else 0
+                    )
+                    if sorted_mem:
+                        fallback_card = sorted_mem[0][0]
+                        center = fallback_card.get("center")
+                        if center and len(center) == 2:
+                            x, y = int(center[0]), int(center[1])
+                            try:
+                                ds.logger.info(
+                                    f"[内存][Effect] select_hand_card 兜底选择手牌: {fallback_card.get('name')} ({x},{y})"
+                                )
+                            except Exception:
+                                pass
+                            time.sleep(0.2)
+                            u2_device.click(x, y)
+                            time.sleep(0.4)
+                            return True
+        except Exception as exc:
+            try:
+                ds.logger.debug(f"[Effect] select_hand_card 内存直读降级为 SIFT: {exc}")
+            except Exception:
+                pass
 
         recognizer = None
         try:
