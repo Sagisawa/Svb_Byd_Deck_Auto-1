@@ -266,6 +266,23 @@ class DeviceState:
             self.logger.error(f"读取设备配置失败，使用默认截图方法: {str(e)}")
             self._screenshot_method = self.take_screenshot_wgc
 
+    @property
+    def serial_file_safe(self) -> str:
+        """获取适用于文件名的安全设备标识（纯 ASCII，不含中文或非法路径字符）。"""
+        raw = str(self.serial or "device").strip()
+        raw = raw.replace("Windows原生", "WindowsNative").replace("原生", "Native")
+        raw = raw.replace(":", "_")
+        safe_chars = []
+        for ch in raw:
+            if ch.isascii() and (ch.isalnum() or ch in "._-"):
+                safe_chars.append(ch)
+            else:
+                safe_chars.append("_")
+        sanitized = "".join(safe_chars).strip("._")
+        while "__" in sanitized:
+            sanitized = sanitized.replace("__", "_")
+        return sanitized or "device"
+
     def _setup_logger(self) -> logging.Logger:
         """为每个设备创建独立的日志器"""
         logger = logging.getLogger(f"Device-{self.serial}")
@@ -274,8 +291,8 @@ class DeviceState:
         if logger.handlers:
             return logger
 
-        # 创建文件日志处理器（按设备区分；同一设备复用同一个日志文件）
-        log_file = f"script_log_{self.serial.replace(':', '_')}.log"
+        # 创建文件日志处理器（按设备区分；纯英文文件名）
+        log_file = f"script_log_{self.serial_file_safe}.log"
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
         file_handler.setFormatter(file_formatter)
@@ -994,10 +1011,10 @@ class DeviceState:
         )
 
     def save_round_statistics(self):
-        """保存回合统计数据到文件"""
+        """保存回合统计数据到文件（使用纯英文安全文件名）"""
         stats_file = os.path.join(
             get_app_root(),
-            f"round_stats_{self.serial.replace(':', '_')}.json",
+            f"round_stats_{self.serial_file_safe}.json",
         )
         try:
             write_json_atomic(stats_file, self.match_history, ensure_ascii=False, indent=2)
@@ -1005,13 +1022,27 @@ class DeviceState:
             self.logger.error(f"保存统计数据失败: {str(e)}")
 
     def load_round_statistics(self):
-        """从文件加载回合统计数据"""
-        filename = f"round_stats_{self.serial.replace(':', '_')}.json"
+        """从文件加载回合统计数据（兼容并自动迁移旧格式）"""
+        filename = f"round_stats_{self.serial_file_safe}.json"
         stats_file = os.path.join(get_app_root(), filename)
         if not os.path.exists(stats_file) and os.path.abspath(filename) != os.path.abspath(
             stats_file
         ):
             stats_file = filename
+
+        # 检查是否存在旧的中文命名文件并自动迁移（如 round_stats_Windows原生.json -> round_stats_WindowsNative.json）
+        if not os.path.exists(stats_file):
+            legacy_raw = str(self.serial or "").replace(":", "_").strip()
+            legacy_filename = f"round_stats_{legacy_raw}.json"
+            legacy_path = os.path.join(get_app_root(), legacy_filename)
+            if os.path.exists(legacy_path):
+                try:
+                    os.replace(legacy_path, stats_file)
+                    self.logger.info(f"已自动将历史战绩数据迁移至纯英文文件: {filename}")
+                except Exception as e:
+                    self.logger.warning(f"迁移旧统计文件失败: {e}")
+                    stats_file = legacy_path
+
         if not os.path.exists(stats_file):
             return
 

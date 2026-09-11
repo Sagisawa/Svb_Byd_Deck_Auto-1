@@ -376,14 +376,19 @@ class DashboardPage(QWidget):
         device_form = QGridLayout()
         device_form.setHorizontalSpacing(10)
         device_form.setVerticalSpacing(10)
-        self.adb_input = QLineEdit("Windows原生")
+        self.capture_method_label = QLabel("运行方式")
+        self.capture_method_combo = QComboBox()
+        self.capture_method_combo.addItem("Windows 原生后台（免ADB极速推荐）", "wgc")
+        self.capture_method_combo.addItem("安卓模拟器（传统ADB）", "adb")
+        self.capture_method_combo.setMinimumWidth(210)
+
+        self.adb_label = QLabel("ADB 地址")
+        self.adb_input = QLineEdit("127.0.0.1:16384")
+        self.adb_label.setVisible(False)
         self.adb_input.setVisible(False)
+
         self.server_combo = QComboBox()
         self.server_combo.addItems(["国服", "国际服"])
-        self.capture_method_combo = QComboBox()
-        self.capture_method_combo.addItem("WGC 截图（极速推荐）", "wgc")
-        self.capture_method_combo.addItem("ADB 截图（传统兼容）", "adb")
-        self.capture_method_combo.setVisible(False)
 
         self.recognition_mode_label = QLabel("识别方式")
         self.recognition_mode_combo = QComboBox()
@@ -409,17 +414,26 @@ class DashboardPage(QWidget):
         self.wgc_preview_button.setObjectName("SecondaryButton")
         self.wgc_preview_button.clicked.connect(self.screenshot_requested)
 
-        self.server_combo.currentTextChanged.connect(self._refresh_control_states)
-        self.wgc_window_combo.currentIndexChanged.connect(self._refresh_control_states)
-        self.recognition_mode_combo.currentIndexChanged.connect(self._on_recognition_mode_changed)
-        self.lab_process_combo.currentIndexChanged.connect(self._on_lab_process_changed)
-
         self.connect_button = QPushButton("连接游戏")
         self.connect_button.setObjectName("SecondaryButton")
         self.connect_button.clicked.connect(self.connect_requested)
         self.screenshot_button = self.wgc_preview_button
 
-        # 第 0 行：识别方式（使用SephiesDeckLab工具识别 / 传统图色识别与OCR）+ 正在运行程序选择下拉 + 刷新按钮
+        self.capture_method_combo.currentIndexChanged.connect(self._on_capture_method_changed)
+        self.adb_input.textChanged.connect(self._refresh_control_states)
+        self.server_combo.currentTextChanged.connect(self._refresh_control_states)
+        self.wgc_window_combo.currentIndexChanged.connect(self._refresh_control_states)
+        self.recognition_mode_combo.currentIndexChanged.connect(self._on_recognition_mode_changed)
+        self.lab_process_combo.currentIndexChanged.connect(self._on_lab_process_changed)
+
+        # 第 0 行：运行方式 + 下拉列表 + 游戏服务器 + 下拉列表 + 连接按钮
+        device_form.addWidget(self.capture_method_label, 0, 0)
+        device_form.addWidget(self.capture_method_combo, 0, 1, 1, 2)
+        device_form.addWidget(QLabel("游戏服务器"), 0, 3)
+        device_form.addWidget(self.server_combo, 0, 4)
+        device_form.addWidget(self.connect_button, 0, 5)
+
+        # 第 1 行：识别方式（使用SephiesDeckLab工具识别 / 传统图色识别与OCR）+ 正在运行程序选择下拉 + 刷新按钮 (WGC模式)
         mode_layout = QHBoxLayout()
         mode_layout.setContentsMargins(0, 0, 0, 0)
         mode_layout.setSpacing(10)
@@ -427,23 +441,23 @@ class DashboardPage(QWidget):
         mode_layout.addWidget(self.lab_process_combo, stretch=1)
         mode_layout.addWidget(self.refresh_lab_button)
 
-        device_form.addWidget(self.recognition_mode_label, 0, 0)
-        device_form.addLayout(mode_layout, 0, 1, 1, 5)
+        device_form.addWidget(self.recognition_mode_label, 1, 0)
+        device_form.addLayout(mode_layout, 1, 1, 1, 5)
 
-        # 第 1 行：游戏窗口 + 下拉列表 + 刷新窗口 + 截图预览
-        device_form.addWidget(self.wgc_window_label, 1, 0)
-        device_form.addWidget(self.wgc_window_combo, 1, 1, 1, 3)
-        device_form.addWidget(self.refresh_windows_button, 1, 4)
-        device_form.addWidget(self.wgc_preview_button, 1, 5)
+        # 第 2 行：游戏窗口 + 下拉列表 + 刷新窗口 + 截图预览 (WGC) / ADB 地址 + 输入框 + 截图预览 (ADB)
+        device_form.addWidget(self.wgc_window_label, 2, 0)
+        device_form.addWidget(self.wgc_window_combo, 2, 1, 1, 3)
+        device_form.addWidget(self.refresh_windows_button, 2, 4)
+        device_form.addWidget(self.wgc_preview_button, 2, 5)
 
-        # 第 2 行：游戏服务器 + 下拉列表 + 连接游戏按钮
-        device_form.addWidget(QLabel("游戏服务器"), 2, 0)
-        device_form.addWidget(self.server_combo, 2, 1)
-        device_form.addWidget(self.connect_button, 2, 4, 1, 2)
-        device_form.setColumnStretch(3, 1)
+        device_form.addWidget(self.adb_label, 2, 0)
+        device_form.addWidget(self.adb_input, 2, 1, 1, 4)
+
+        device_form.setColumnStretch(2, 1)
         control.addLayout(device_form)
         self.populate_wgc_windows()
         self.populate_lab_processes()
+        self._on_capture_method_changed()
         self.log_panel = QFrame()
         self.log_panel.setObjectName("DashboardPanel")
         log_layout = QVBoxLayout(self.log_panel)
@@ -618,7 +632,17 @@ class DashboardPage(QWidget):
         devices = config.get("devices", []) if isinstance(config, dict) else []
         if isinstance(devices, list) and devices:
             device = devices[-1] if isinstance(devices[-1], dict) else {}
-            self.adb_input.setText(str(device.get("serial") or "127.0.0.1:16384"))
+            saved_serial = str(device.get("serial") or "").strip()
+            if (
+                saved_serial
+                and "Windows" not in saved_serial
+                and "原生" not in saved_serial
+                and "Native" not in saved_serial
+            ):
+                self.adb_input.setText(saved_serial)
+            else:
+                self.adb_input.setText("127.0.0.1:16384")
+
             self.server_combo.setCurrentText("国际服" if device.get("is_global") else "国服")
             self.deep_color_checkbox.setChecked(bool(device.get("screenshot_deep_color", False)))
             self.gala_mode_checkbox.setChecked(bool(device.get("gala_mode", False)))
@@ -639,6 +663,7 @@ class DashboardPage(QWidget):
         saved_log_path = str(memory_reader.get("session_log_path") or "auto")
         self.populate_lab_processes(preferred_path=saved_log_path)
         self._on_recognition_mode_changed()
+        self._on_capture_method_changed()
         rotation = config.get("deck_rotation", {}) if isinstance(config, dict) else {}
         if not isinstance(rotation, dict):
             rotation = {}
@@ -664,19 +689,31 @@ class DashboardPage(QWidget):
         )
 
     def connection_values(self) -> Dict[str, Any]:
+        is_adb = str(self.capture_method_combo.currentData() or "wgc") == "adb"
+        if is_adb:
+            serial = self.adb_input.text().strip() or "127.0.0.1:16384"
+            rec_mode = "vision"
+            target_hwnd = 0
+            wgc_title = ""
+        else:
+            serial = "WindowsNative"
+            rec_mode = str(self.recognition_mode_combo.currentData() or "memory")
+            target_hwnd = int(self.wgc_window_combo.currentData() or 0)
+            wgc_title = str(self.wgc_window_combo.currentText() or "")
+
         return {
-            "serial": self.adb_input.text().strip(),
+            "serial": serial,
             "server": self.server_combo.currentText(),
             "is_global": self.server_combo.currentText() == "国际服",
             "screenshot_deep_color": self.deep_color_checkbox.isChecked(),
             "gala_mode": self.gala_mode_checkbox.isChecked(),
             "enable_auto_pass": self.auto_pass_checkbox.isChecked(),
             "auto_restart_enabled": self.auto_restart_checkbox.isChecked(),
-            "memory_reader_enabled": str(self.recognition_mode_combo.currentData() or "memory") == "memory",
+            "memory_reader_enabled": rec_mode == "memory",
             "session_log_path": str(self.lab_process_combo.currentData() or "auto"),
-            "screenshot_method": str(self.capture_method_combo.currentData() or "wgc"),
-            "target_hwnd": int(self.wgc_window_combo.currentData() or 0),
-            "wgc_window_title": str(self.wgc_window_combo.currentText() or ""),
+            "screenshot_method": "adb" if is_adb else "wgc",
+            "target_hwnd": target_hwnd,
+            "wgc_window_title": wgc_title,
         }
 
     def set_device_info(self, info: Dict[str, Any]) -> None:
@@ -739,17 +776,26 @@ class DashboardPage(QWidget):
             "paused",
             "stopping",
         }
-        self.connect_button.setEnabled(not active and not connecting)
-        self.start_button.setEnabled(not active and not connecting)
+        is_adb = str(self.capture_method_combo.currentData() or "wgc") == "adb"
+        has_serial = bool(self.adb_input.text().strip()) if is_adb else True
+        self.connect_button.setEnabled(not active and not connecting and has_serial)
+        self.start_button.setEnabled(not active and not connecting and has_serial)
+        default_tip = (
+            "开始运行时会先连接并检查当前模拟器"
+            if is_adb
+            else "开始运行时会自动绑定并检查所选游戏窗口"
+        )
         self.start_button.setToolTip(
             ""
             if self._device_connected
-            else "开始运行时会自动绑定并检查所选游戏窗口"
+            else default_tip
         )
         self.pause_button.setEnabled(running)
         self.resume_button.setEnabled(paused)
         self.stop_button.setEnabled(running or paused)
         for control in (
+            self.capture_method_combo,
+            self.adb_input,
             self.server_combo,
             self.wgc_window_combo,
             self.refresh_windows_button,
@@ -765,8 +811,46 @@ class DashboardPage(QWidget):
         ):
             control.setEnabled(settings_enabled)
 
+    def _on_capture_method_changed(self) -> None:
+        is_adb = str(self.capture_method_combo.currentData() or "wgc") == "adb"
+
+        # ADB 控件
+        self.adb_label.setVisible(is_adb)
+        self.adb_input.setVisible(is_adb)
+
+        # WGC 原生控件
+        self.recognition_mode_label.setVisible(not is_adb)
+        self.recognition_mode_combo.setVisible(not is_adb)
+        is_memory = (not is_adb) and (
+            str(self.recognition_mode_combo.currentData() or "memory") == "memory"
+        )
+        self.lab_process_combo.setVisible(is_memory)
+        self.refresh_lab_button.setVisible(is_memory)
+
+        self.wgc_window_label.setVisible(not is_adb)
+        self.wgc_window_combo.setVisible(not is_adb)
+        self.refresh_windows_button.setVisible(not is_adb)
+
+        if is_adb:
+            self.connect_button.setText("连接设备")
+            cur_adb = self.adb_input.text().strip()
+            if (
+                not cur_adb
+                or "Windows" in cur_adb
+                or "原生" in cur_adb
+                or "Native" in cur_adb
+            ):
+                self.adb_input.setText("127.0.0.1:16384")
+        else:
+            self.connect_button.setText("连接游戏")
+
+        self._refresh_control_states()
+
     def _on_recognition_mode_changed(self) -> None:
-        is_memory = str(self.recognition_mode_combo.currentData() or "memory") == "memory"
+        is_adb = str(self.capture_method_combo.currentData() or "wgc") == "adb"
+        is_memory = (not is_adb) and (
+            str(self.recognition_mode_combo.currentData() or "memory") == "memory"
+        )
         self.lab_process_combo.setVisible(is_memory)
         self.refresh_lab_button.setVisible(is_memory)
         self._refresh_control_states()

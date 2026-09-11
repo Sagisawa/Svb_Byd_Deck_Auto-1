@@ -562,24 +562,29 @@ class ShadowverseUI(QMainWindow):
         target_hwnd = int(values.get("target_hwnd", 0) or 0)
         win_title = str(values.get("wgc_window_title", "") or "")
 
-        if method == "adb" and not serial:
-            self._start_after_connect = False
-            QMessageBox.warning(self, "ADB 地址为空", "请输入模拟器 ADB 地址。")
-            return
+        if method == "adb":
+            if not serial:
+                self._start_after_connect = False
+                QMessageBox.warning(self, "ADB 地址为空", "请输入模拟器 ADB 地址。")
+                return
+        else:
+            if not serial or serial == "Windows原生":
+                serial = "WindowsNative"
 
         log_desc = f"游戏窗口: {win_title or '自动匹配'}" if method != "adb" else f"ADB 设备: {serial}"
         self.append_log(f"正在连接目标 ({log_desc})...")
         self.state.set_run_status("connecting")
         self.state.set_device(
             connected=False,
-            serial=serial or (f"HWND:{target_hwnd}" if target_hwnd else "Windows原生"),
+            serial=serial or (f"HWND:{target_hwnd}" if target_hwnd else "WindowsNative"),
             server=values.get("server"),
             status="连接中",
             message=f"正在绑定并检查 {log_desc}",
         )
 
+        device_name = f"模拟器-{serial}" if method == "adb" else f"Windows客户端-{target_hwnd or '原生'}"
         self._device_config = {
-            "name": f"游戏窗口-{target_hwnd or '原生'}" if method != "adb" else f"模拟器-{serial}",
+            "name": device_name,
             "serial": serial,
             "is_global": bool(values.get("is_global")),
             "screenshot_deep_color": bool(values.get("screenshot_deep_color")),
@@ -740,14 +745,19 @@ class ShadowverseUI(QMainWindow):
                 self.append_log(f"保存配置失败: {parse_error or 'config.json 解析错误'}")
                 return
 
-            serial = str(values.get("serial") or "")
+            serial = str(values.get("serial") or "").strip()
+            method = str(values.get("screenshot_method") or "wgc").lower()
+            if method != "adb" and (not serial or serial == "Windows原生"):
+                serial = "WindowsNative"
+            target_hwnd = int(values.get("target_hwnd", 0) or 0)
+            device_name = f"模拟器-{serial}" if method == "adb" else f"Windows客户端-{target_hwnd or '原生'}"
             device_update = {
-                "name": f"模拟器-{serial}",
+                "name": device_name,
                 "serial": serial,
                 "is_global": bool(values.get("is_global")),
                 "screenshot_deep_color": bool(values.get("screenshot_deep_color")),
-                "screenshot_method": str(values.get("screenshot_method") or "wgc"),
-                "target_hwnd": int(values.get("target_hwnd", 0) or 0),
+                "screenshot_method": method,
+                "target_hwnd": target_hwnd,
                 "wgc_window_title": str(values.get("wgc_window_title", "") or ""),
                 "gala_mode": bool(values.get("gala_mode")),
             }

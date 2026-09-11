@@ -44,9 +44,9 @@ class DeviceManager:
 
         for device_config in devices:
             serial = str(device_config.get("serial") or "").strip()
-            if not serial:
+            if not serial or serial == "Windows原生":
                 target_hwnd = device_config.get("target_hwnd")
-                serial = f"HWND_{target_hwnd}" if target_hwnd else "Windows原生"
+                serial = f"HWND_{target_hwnd}" if target_hwnd else "WindowsNative"
                 device_config["serial"] = serial
 
             # 创建设备状态
