@@ -163,10 +163,17 @@ class DeviceManager:
 
     def _connect_device(self, device_config: Dict[str, Any], device_state: DeviceState) -> bool:
         """连接目标设备或游戏窗口（优先免 ADB 的 Windows 原生后台模式）。"""
-        method = str(device_config.get("screenshot_method", "wgc")).lower()
+        method = str(device_config.get("screenshot_method") or "").strip().lower()
         target_hwnd = int(device_config.get("target_hwnd", 0) or 0)
         title_keyword = device_config.get("wgc_window_title")
         serial = str(device_config.get("serial") or "").strip()
+        if not method:
+            if target_hwnd or title_keyword:
+                method = "wgc"
+            elif serial and "Native" not in serial and "原生" not in serial and "Windows" not in serial:
+                method = "adb"
+            else:
+                method = "wgc"
 
         # ========== 1. Windows 原生后台模式（默认，免 ADB） ==========
         if method != "adb":

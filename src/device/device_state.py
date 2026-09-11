@@ -243,9 +243,15 @@ class DeviceState:
     def _init_screenshot_method(self):
         """初始化截图方法选择，只在程序启动时执行一次"""
         try:
-            self.screenshot_method = str(
-                self.device_config.get("screenshot_method", "wgc")
-            ).lower()
+            method = str(self.device_config.get("screenshot_method") or "").strip().lower()
+            if not method:
+                if self.device_config.get("target_hwnd") or self.device_config.get("wgc_window_title"):
+                    method = "wgc"
+                elif self.serial and "Native" not in self.serial and "原生" not in self.serial and "Windows" not in self.serial:
+                    method = "adb"
+                else:
+                    method = "wgc"
+            self.screenshot_method = method
             self.screenshot_deep_color = bool(
                 self.device_config.get("screenshot_deep_color", False)
             )

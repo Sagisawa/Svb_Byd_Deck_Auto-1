@@ -646,7 +646,14 @@ class DashboardPage(QWidget):
             self.server_combo.setCurrentText("国际服" if device.get("is_global") else "国服")
             self.deep_color_checkbox.setChecked(bool(device.get("screenshot_deep_color", False)))
             self.gala_mode_checkbox.setChecked(bool(device.get("gala_mode", False)))
-            method_val = str(device.get("screenshot_method", "wgc")).lower()
+            method_val = str(device.get("screenshot_method") or "").strip().lower()
+            if not method_val:
+                if device.get("target_hwnd") or device.get("wgc_window_title"):
+                    method_val = "wgc"
+                elif saved_serial and "Native" not in saved_serial and "原生" not in saved_serial and "Windows" not in saved_serial:
+                    method_val = "adb"
+                else:
+                    method_val = "wgc"
             idx = self.capture_method_combo.findData(method_val)
             self.capture_method_combo.setCurrentIndex(max(0, idx))
             pref_hwnd = int(device.get("target_hwnd", 0) or 0)
