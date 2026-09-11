@@ -25,6 +25,9 @@ namespace DesktopAvatar
         private bool _audioMuted = false;
         private Size? _pendingReconnectDesktopSize;
         private bool _disconnectRequested = false;
+        private string _userName;
+        private string _domain;
+        private string _password;
 
         internal event EventHandler ConnectionFailed;
         internal event EventHandler LoginCompleted;
@@ -34,6 +37,13 @@ namespace DesktopAvatar
         internal RdpActiveXHost() : base(RdpClientClsid)
         {
             Dock = DockStyle.Fill;
+        }
+
+        internal void SetCredentials(string userName, string domain, string password)
+        {
+            _userName = userName;
+            _domain = domain;
+            _password = password;
         }
 
         internal int ConnectedState
@@ -58,8 +68,12 @@ namespace DesktopAvatar
             }
         }
 
-        internal void ConnectToChildSession(Size desktopSize)
+        internal void ConnectToChildSession(Size desktopSize, string userName = null, string domain = null, string password = null)
         {
+            if (userName != null) _userName = userName;
+            if (domain != null) _domain = domain;
+            if (password != null) _password = password;
+
             if (ConnectedState != 0)
             {
                 return;
@@ -77,6 +91,23 @@ namespace DesktopAvatar
             SetComProperty(client, "ConnectingText", "正在连接桌面分身...");
             SetComProperty(client, "DisconnectedText", "桌面分身已断开");
 
+            if (!string.IsNullOrEmpty(_userName))
+            {
+                string u = _userName;
+                string d = _domain;
+                if (string.IsNullOrEmpty(d) && u.Contains("\\"))
+                {
+                    var parts = u.Split(new char[] { '\\' }, 2);
+                    d = parts[0];
+                    u = parts[1];
+                }
+                SetComProperty(client, "UserName", u);
+                if (!string.IsNullOrEmpty(d))
+                {
+                    SetComProperty(client, "Domain", d);
+                }
+            }
+
             var securedSettings = GetComProperty(client, "SecuredSettings2");
             if (securedSettings != null)
             {
@@ -91,6 +122,10 @@ namespace DesktopAvatar
                 SetComProperty(advancedSettings, "EnableCredSspSupport", true);
                 SetComProperty(advancedSettings, "EnableWindowsKey", 1);
                 SetComProperty(advancedSettings, "SmartSizing", _smartSizingEnabled);
+                if (!string.IsNullOrEmpty(_password))
+                {
+                    SetComProperty(advancedSettings, "ClearTextPassword", _password);
+                }
             }
 
             // 核心：设置 ConnectToChildSession = true

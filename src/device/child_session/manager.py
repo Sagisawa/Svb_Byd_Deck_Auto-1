@@ -6,18 +6,64 @@
 
 from __future__ import annotations
 
+import base64
 import ctypes
+import getpass
 import logging
 import os
 import subprocess
 import sys
-from typing import Optional
+from typing import Optional, Tuple
 
-from src.config.paths import get_app_root
+from src.config.paths import get_app_root, is_frozen
 
 logger = logging.getLogger(__name__)
 
 _GLOBAL_MANAGER: Optional[ChildSessionManager] = None
+
+
+def encode_credential_secret(plain: str) -> str:
+    """简单对本地凭据密码做混淆编码保存。"""
+    if not plain:
+        return ""
+    try:
+        raw = plain.encode("utf-8")
+        return "b64:" + base64.b64encode(raw).decode("ascii")
+    except Exception:
+        return plain
+
+
+def decode_credential_secret(secret: str) -> str:
+    """解析已编码的凭据密码。"""
+    if not secret:
+        return ""
+    if secret.startswith("b64:"):
+        try:
+            raw = base64.b64decode(secret[4:].encode("ascii"))
+            return raw.decode("utf-8")
+        except Exception:
+            return ""
+    return secret
+
+
+def find_default_script_path() -> Tuple[str, str, str]:
+    """探测 Svb_Byd_Deck_Auto 的启动可执行文件、启动参数和工作目录。"""
+    root = get_app_root()
+    if is_frozen():
+        return sys.executable, "", os.path.dirname(sys.executable)
+    dist_exe = os.path.join(root, "dist", "Svb_Byd_Deck_Auto", "Svb_Byd_Deck_Auto.exe")
+    if os.path.isfile(dist_exe):
+        return os.path.abspath(dist_exe), "", os.path.dirname(dist_exe)
+    root_exe = os.path.join(root, "Svb_Byd_Deck_Auto.exe")
+    if os.path.isfile(root_exe):
+        return os.path.abspath(root_exe), "", root
+    main_ui = os.path.join(root, "main_ui.py")
+    if os.path.isfile(main_ui):
+        py_dir = os.path.dirname(sys.executable)
+        pythonw = os.path.join(py_dir, "pythonw.exe")
+        py_exec = pythonw if os.path.isfile(pythonw) else sys.executable
+        return os.path.abspath(py_exec), f'"{os.path.abspath(main_ui)}"', root
+    return "", "", root
 
 
 class ChildSessionManager:
@@ -98,12 +144,30 @@ class ChildSessionManager:
         from src.config.config_repository import ConfigRepository
         from src.config.paths import get_config_path
 
+        current_user = ""
+        try:
+            current_user = getpass.getuser()
+        except Exception:
+            current_user = "32698"
+
+        default_script, default_args, default_workdir = find_default_script_path()
+
         default_cfg = {
             "enabled": True,
             "resolution": "1920x1080",
             "auto_launch_enabled": True,
             "launch_delay_seconds": 2,
             "auto_launch_programs": [],
+            "auto_login": {
+                "enabled": True,
+                "username": current_user,
+                "password": "",
+            },
+            "script_program": {
+                "path": default_script,
+                "args": default_args,
+                "working_dir": default_workdir,
+            },
         }
         try:
             repo = ConfigRepository(get_config_path())
@@ -113,6 +177,13 @@ class ChildSessionManager:
                 if isinstance(cs, dict):
                     merged = dict(default_cfg)
                     merged.update(cs)
+                    # 递归合并嵌套字典
+                    if isinstance(cs.get("auto_login"), dict):
+                        merged["auto_login"] = dict(default_cfg["auto_login"])
+                        merged["auto_login"].update(cs["auto_login"])
+                    if isinstance(cs.get("script_program"), dict):
+                        merged["script_program"] = dict(default_cfg["script_program"])
+                        merged["script_program"].update(cs["script_program"])
                     return merged
                 # 兼容旧配置中的分辨率键
                 old_res = cfg.get("child_session_resolution")
@@ -201,37 +272,63 @@ class ChildSessionManager:
             logger.info("DesktopAvatar 已经在运行中")
             return True
 
-        # 如果未显式提供 launch_config_file，自动检查配置并输出自启动清单
+        # 如果未显式提供 launch_config_file，自动检查配置并输出综合启动清单
         if not launch_config_file and not launch_target:
             try:
                 import json
                 cfg = self.get_child_session_config()
+
+                user_name = ""
+                user_pwd = ""
+                auto_login = cfg.get("auto_login", {})
+                if isinstance(auto_login, dict) and auto_login.get("enabled", True):
+                    user_name = str(auto_login.get("username", "") or "")
+                    user_pwd = decode_credential_secret(str(auto_login.get("password", "") or ""))
+
+                script_cfg = cfg.get("script_program", {})
+                script_path = ""
+                script_args = ""
+                script_workdir = ""
+                if isinstance(script_cfg, dict):
+                    script_path = str(script_cfg.get("path", "") or "")
+                    script_args = str(script_cfg.get("args", "") or "")
+                    script_workdir = str(script_cfg.get("working_dir", "") or "")
+                if not script_path:
+                    script_path, script_args, script_workdir = find_default_script_path()
+
+                items = []
                 if cfg.get("auto_launch_enabled", True):
                     progs = cfg.get("auto_launch_programs", [])
                     enabled_progs = [p for p in progs if isinstance(p, dict) and p.get("enabled", True)]
-                    if enabled_progs:
-                        # 确保转换为 C# AutoLaunchItem 字段
-                        items = []
-                        init_delay = int(cfg.get("launch_delay_seconds", 2))
-                        for idx, p in enumerate(enabled_progs):
-                            item_delay = int(p.get("delay_seconds", 0))
-                            if idx == 0 and init_delay > 0 and item_delay == 0:
-                                item_delay = init_delay
-                            items.append({
-                                "Name": str(p.get("name") or os.path.basename(p.get("path", ""))),
-                                "Path": str(p.get("path", "")),
-                                "Arguments": str(p.get("args", "")),
-                                "WorkingDirectory": str(p.get("working_dir", "")),
-                                "DelaySeconds": item_delay,
-                                "Enabled": True,
-                            })
-                        temp_dir = os.path.dirname(exe_path)
-                        cfg_file = os.path.join(temp_dir, "auto_launch_cache.json")
-                        with open(cfg_file, "w", encoding="utf-8") as f:
-                            json.dump(items, f, ensure_ascii=False, indent=2)
-                        launch_config_file = cfg_file
+                    init_delay = int(cfg.get("launch_delay_seconds", 2))
+                    for idx, p in enumerate(enabled_progs):
+                        item_delay = int(p.get("delay_seconds", 0))
+                        if idx == 0 and init_delay > 0 and item_delay == 0:
+                            item_delay = init_delay
+                        items.append({
+                            "Name": str(p.get("name") or os.path.basename(p.get("path", ""))),
+                            "Path": str(p.get("path", "")),
+                            "Arguments": str(p.get("args", "")),
+                            "WorkingDirectory": str(p.get("working_dir", "")),
+                            "DelaySeconds": item_delay,
+                            "Enabled": True,
+                        })
+
+                payload = {
+                    "UserName": user_name,
+                    "Password": user_pwd,
+                    "ScriptPath": script_path,
+                    "ScriptArguments": script_args,
+                    "ScriptWorkingDirectory": script_workdir,
+                    "AutoLaunchItems": items,
+                }
+                temp_dir = os.path.dirname(exe_path)
+                cfg_file = os.path.join(temp_dir, "auto_launch_cache.json")
+                with open(cfg_file, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+                launch_config_file = cfg_file
             except Exception as exc:
-                logger.warning("生成自启动清单失败: %s", exc)
+                logger.warning("生成启动配置文件失败: %s", exc)
 
         cmd = [exe_path, "--width", str(width), "--height", str(height)]
         if launch_target:

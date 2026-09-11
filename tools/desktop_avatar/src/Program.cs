@@ -42,6 +42,11 @@ namespace DesktopAvatar
             string launchOnlyPath = null;
             string launchOnlyArgs = null;
             string launchOnlyWorkDir = null;
+            string userName = null;
+            string password = null;
+            string scriptPath = null;
+            string scriptArgs = null;
+            string scriptWorkDir = null;
             string title = null;
             bool enableOnly = false;
             bool logoffOnly = false;
@@ -76,6 +81,26 @@ namespace DesktopAvatar
                 else if (string.Equals(arg, "--workdir", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
                 {
                     launchOnlyWorkDir = args[++i];
+                }
+                else if (string.Equals(arg, "--username", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    userName = args[++i];
+                }
+                else if (string.Equals(arg, "--password", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    password = args[++i];
+                }
+                else if (string.Equals(arg, "--script-path", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    scriptPath = args[++i];
+                }
+                else if (string.Equals(arg, "--script-args", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    scriptArgs = args[++i];
+                }
+                else if (string.Equals(arg, "--script-workdir", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    scriptWorkDir = args[++i];
                 }
                 else if (string.Equals(arg, "--title", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
                 {
@@ -197,11 +222,31 @@ namespace DesktopAvatar
                     else
                     {
                         var dict = serializer.Deserialize<Dictionary<string, object>>(content);
-                        if (dict != null && dict.ContainsKey("auto_launch_programs"))
+                        if (dict != null)
                         {
-                            var progsJson = serializer.Serialize(dict["auto_launch_programs"]);
-                            var list = serializer.Deserialize<List<AutoLaunchItem>>(progsJson);
-                            if (list != null) autoLaunchItems.AddRange(list);
+                            if (string.IsNullOrEmpty(userName) && dict.ContainsKey("UserName") && dict["UserName"] != null)
+                                userName = Convert.ToString(dict["UserName"]);
+                            if (string.IsNullOrEmpty(password) && dict.ContainsKey("Password") && dict["Password"] != null)
+                                password = Convert.ToString(dict["Password"]);
+                            if (string.IsNullOrEmpty(scriptPath) && dict.ContainsKey("ScriptPath") && dict["ScriptPath"] != null)
+                                scriptPath = Convert.ToString(dict["ScriptPath"]);
+                            if (string.IsNullOrEmpty(scriptArgs) && dict.ContainsKey("ScriptArguments") && dict["ScriptArguments"] != null)
+                                scriptArgs = Convert.ToString(dict["ScriptArguments"]);
+                            if (string.IsNullOrEmpty(scriptWorkDir) && dict.ContainsKey("ScriptWorkingDirectory") && dict["ScriptWorkingDirectory"] != null)
+                                scriptWorkDir = Convert.ToString(dict["ScriptWorkingDirectory"]);
+
+                            if (dict.ContainsKey("AutoLaunchItems") && dict["AutoLaunchItems"] != null)
+                            {
+                                var progsJson = serializer.Serialize(dict["AutoLaunchItems"]);
+                                var list = serializer.Deserialize<List<AutoLaunchItem>>(progsJson);
+                                if (list != null) autoLaunchItems.AddRange(list);
+                            }
+                            else if (dict.ContainsKey("auto_launch_programs") && dict["auto_launch_programs"] != null)
+                            {
+                                var progsJson = serializer.Serialize(dict["auto_launch_programs"]);
+                                var list = serializer.Deserialize<List<AutoLaunchItem>>(progsJson);
+                                if (list != null) autoLaunchItems.AddRange(list);
+                            }
                         }
                     }
                 }
@@ -222,7 +267,15 @@ namespace DesktopAvatar
             }
 
             var desktopSize = new Size(Math.Max(640, width), Math.Max(480, height));
-            Application.Run(new AvatarForm(desktopSize, autoLaunchItems, title));
+            Application.Run(new AvatarForm(
+                desktopSize,
+                autoLaunchItems,
+                title,
+                userName,
+                password,
+                scriptPath,
+                scriptArgs,
+                scriptWorkDir));
             return 0;
         }
     }

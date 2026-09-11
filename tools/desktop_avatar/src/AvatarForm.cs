@@ -11,6 +11,11 @@ namespace DesktopAvatar
     {
         private Size _currentDesktopSize;
         private readonly List<AutoLaunchItem> _autoLaunchItems;
+        private readonly string _userName;
+        private readonly string _password;
+        private string _scriptPath;
+        private readonly string _scriptArguments;
+        private readonly string _scriptWorkingDirectory;
         private readonly RdpActiveXHost _rdpHost;
         private readonly Panel _topPanel;
         private readonly Label _lblStatus;
@@ -21,21 +26,35 @@ namespace DesktopAvatar
         private readonly Button _btnWinD;
         private readonly Button _btnWinTab;
         private readonly Button _btnTopMost;
+        private readonly Button _btnLaunchScript;
         private readonly Button _btnLaunch;
         private readonly Button _btnLogoff;
         private bool _isSmartSizing = true;
         private bool _isTopMost = false;
         private bool _autoLaunchDone = false;
 
-        public AvatarForm(Size desktopSize, List<AutoLaunchItem> autoLaunchItems = null, string windowTitle = null)
+        public AvatarForm(
+            Size desktopSize,
+            List<AutoLaunchItem> autoLaunchItems = null,
+            string windowTitle = null,
+            string userName = null,
+            string password = null,
+            string scriptPath = null,
+            string scriptArguments = null,
+            string scriptWorkingDirectory = null)
         {
             _currentDesktopSize = desktopSize;
             _autoLaunchItems = autoLaunchItems ?? new List<AutoLaunchItem>();
+            _userName = userName;
+            _password = password;
+            _scriptPath = scriptPath;
+            _scriptArguments = scriptArguments;
+            _scriptWorkingDirectory = scriptWorkingDirectory;
 
             Text = string.IsNullOrEmpty(windowTitle) ? "影之诗桌面分身 (Svb Desktop Avatar)" : windowTitle;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(Math.Min(1280, desktopSize.Width), Math.Min(720, desktopSize.Height) + 38);
-            MinimumSize = new Size(820, 480);
+            ClientSize = new Size(Math.Max(1000, Math.Min(1280, desktopSize.Width)), Math.Min(720, desktopSize.Height) + 38);
+            MinimumSize = new Size(920, 480);
             BackColor = Color.FromArgb(24, 24, 37); // Dark theme
 
             // 顶部工具栏
@@ -65,7 +84,7 @@ namespace DesktopAvatar
                 BackColor = Color.FromArgb(49, 50, 68),
                 ForeColor = Color.FromArgb(205, 214, 244),
                 Font = new Font("Segoe UI", 9f),
-                Width = 160,
+                Width = 180,
                 Height = 28,
                 Margin = new Padding(3, 4, 3, 2),
                 Cursor = Cursors.Hand
@@ -93,14 +112,30 @@ namespace DesktopAvatar
 
             PopulateResolutionPresets();
 
-            _btnFitWindow = CreateButton("1:1 视口", 64);
-            _btnSmartSizing = CreateButton("自适应: 开", 72);
-            _btnReconnect = CreateButton("重连", 50);
+            _btnFitWindow = CreateButton("1:1 视口", 68);
+            _btnSmartSizing = CreateButton("自适应: 开", 80);
+            _btnReconnect = CreateButton("重连", 52);
             _btnWinD = CreateButton("Win+D", 58);
             _btnWinTab = CreateButton("Win+Tab", 68);
-            _btnTopMost = CreateButton("置顶: 关", 64);
-            _btnLaunch = CreateButton("运行程序", 72);
-            _btnLogoff = CreateButton("注销会话", 72);
+            _btnTopMost = CreateButton("置顶: 关", 68);
+            _btnLaunchScript = new Button
+            {
+                Text = "启动脚本程序",
+                Width = 118,
+                Height = 28,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(37, 99, 235), // Royal blue accent
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                Margin = new Padding(3, 1, 3, 1),
+                Cursor = Cursors.Hand
+            };
+            _btnLaunchScript.FlatAppearance.BorderSize = 0;
+            var ttScript = new ToolTip();
+            ttScript.SetToolTip(_btnLaunchScript, "在分身中以最高权限启动 Svb_Byd_Deck_Auto 自动化程序");
+
+            _btnLaunch = CreateButton("运行程序", 76);
+            _btnLogoff = CreateButton("注销会话", 76);
 
             var flowPanel = new FlowLayoutPanel
             {
@@ -119,6 +154,7 @@ namespace DesktopAvatar
             flowPanel.Controls.Add(_btnWinD);
             flowPanel.Controls.Add(_btnWinTab);
             flowPanel.Controls.Add(_btnTopMost);
+            flowPanel.Controls.Add(_btnLaunchScript);
             flowPanel.Controls.Add(_btnLaunch);
             flowPanel.Controls.Add(_btnLogoff);
 
@@ -144,6 +180,7 @@ namespace DesktopAvatar
             _btnWinD.Click += (s, e) => { try { _rdpHost.SendShowDesktopShortcut(); } catch { } };
             _btnWinTab.Click += (s, e) => { try { _rdpHost.SendTaskViewShortcut(); } catch { } };
             _btnTopMost.Click += OnToggleTopMost;
+            _btnLaunchScript.Click += OnLaunchScriptClicked;
             _btnLaunch.Click += OnLaunchProgramClicked;
             _btnLogoff.Click += OnLogoffClicked;
         }
@@ -305,11 +342,99 @@ namespace DesktopAvatar
             UpdateStatus(string.Format("正在连接 Child Session ({0}×{1})...", _currentDesktopSize.Width, _currentDesktopSize.Height));
             try
             {
-                _rdpHost.ConnectToChildSession(_currentDesktopSize);
+                _rdpHost.ConnectToChildSession(_currentDesktopSize, _userName, null, _password);
             }
             catch (Exception ex)
             {
                 UpdateStatus("连接异常: " + ex.Message);
+            }
+        }
+
+        private string DetectScriptPath()
+        {
+            string appDir = AppDomain.CurrentDomain.BaseDirectory;
+            string[] candidates = new string[]
+            {
+                Path.Combine(appDir, "Svb_Byd_Deck_Auto.exe"),
+                Path.Combine(appDir, "..", "Svb_Byd_Deck_Auto.exe"),
+                Path.Combine(appDir, "..", "..", "dist", "Svb_Byd_Deck_Auto", "Svb_Byd_Deck_Auto.exe"),
+                Path.Combine(appDir, "..", "..", "Svb_Byd_Deck_Auto.exe"),
+            };
+
+            foreach (var path in candidates)
+            {
+                try
+                {
+                    var full = Path.GetFullPath(path);
+                    if (File.Exists(full))
+                    {
+                        return full;
+                    }
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private async void OnLaunchScriptClicked(object sender, EventArgs e)
+        {
+            var sessionId = ChildSessionNativeMethods.TryGetChildSessionId();
+            if (!sessionId.HasValue)
+            {
+                MessageBox.Show(
+                    "桌面分身尚未完全就绪，请稍候再试。",
+                    "提示",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            string targetPath = _scriptPath;
+            string targetArgs = _scriptArguments ?? "";
+            string targetWorkDir = _scriptWorkingDirectory ?? "";
+
+            if (string.IsNullOrEmpty(targetPath) || !File.Exists(targetPath))
+            {
+                targetPath = DetectScriptPath();
+            }
+
+            if (string.IsNullOrEmpty(targetPath) || !File.Exists(targetPath))
+            {
+                using (var ofd = new OpenFileDialog())
+                {
+                    ofd.Title = "选择 Svb_Byd_Deck_Auto 自动化程序";
+                    ofd.Filter = "可执行程序 (*.exe)|*.exe|Python 脚本 (*.py)|*.py|所有文件 (*.*)|*.*";
+                    if (ofd.ShowDialog(this) == DialogResult.OK)
+                    {
+                        targetPath = ofd.FileName;
+                        _scriptPath = targetPath;
+                    }
+                    else
+                    {
+                        return;
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(targetWorkDir))
+            {
+                targetWorkDir = Path.GetDirectoryName(targetPath);
+            }
+
+            try
+            {
+                UpdateStatus("正在启动脚本: " + Path.GetFileName(targetPath) + "...");
+                await ChildSessionProcessLauncher.LaunchElevatedAsync(
+                    sessionId.Value,
+                    targetPath,
+                    targetArgs,
+                    targetWorkDir);
+                UpdateStatus("已在分身中启动脚本: " + Path.GetFileName(targetPath));
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("启动脚本程序失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus("启动脚本失败: " + ex.Message);
             }
         }
 
