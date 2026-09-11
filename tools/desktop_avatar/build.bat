@@ -30,6 +30,7 @@ set "DIST_EXE=%~dp0DesktopAvatar.exe"
   /r:System.Windows.Forms.dll ^
   /r:System.Drawing.dll ^
   /r:System.Core.dll ^
+  /r:System.Web.Extensions.dll ^
   /r:Microsoft.CSharp.dll ^
   src\Compatibility.cs ^
   src\ChildSessionNativeMethods.cs ^

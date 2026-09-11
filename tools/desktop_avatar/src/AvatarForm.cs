@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace DesktopAvatar
@@ -8,7 +10,7 @@ namespace DesktopAvatar
     internal sealed class AvatarForm : Form
     {
         private Size _currentDesktopSize;
-        private readonly string _autoLaunchTarget;
+        private readonly List<AutoLaunchItem> _autoLaunchItems;
         private readonly RdpActiveXHost _rdpHost;
         private readonly Panel _topPanel;
         private readonly Label _lblStatus;
@@ -25,10 +27,10 @@ namespace DesktopAvatar
         private bool _isTopMost = false;
         private bool _autoLaunchDone = false;
 
-        public AvatarForm(Size desktopSize, string autoLaunchTarget = null, string windowTitle = null)
+        public AvatarForm(Size desktopSize, List<AutoLaunchItem> autoLaunchItems = null, string windowTitle = null)
         {
             _currentDesktopSize = desktopSize;
-            _autoLaunchTarget = autoLaunchTarget;
+            _autoLaunchItems = autoLaunchItems ?? new List<AutoLaunchItem>();
 
             Text = string.IsNullOrEmpty(windowTitle) ? "影之诗桌面分身 (Svb Desktop Avatar)" : windowTitle;
             StartPosition = FormStartPosition.CenterScreen;
@@ -329,17 +331,46 @@ namespace DesktopAvatar
                 : string.Format("已连接桌面分身 ({0}×{1})", _currentDesktopSize.Width, _currentDesktopSize.Height);
             UpdateStatus(status);
 
-            // 自动拉起目标程序
-            if (!_autoLaunchDone && !string.IsNullOrEmpty(_autoLaunchTarget) && sessionId.HasValue)
+            // 自动拉起已配置的自启程序列表（系统级穿透，最高管理员权限，完全绕过 UAC 拦截）
+            if (!_autoLaunchDone && sessionId.HasValue && _autoLaunchItems != null && _autoLaunchItems.Count > 0)
             {
                 _autoLaunchDone = true;
+                _ = LaunchConfiguredProgramsAsync(sessionId.Value);
+            }
+        }
+
+        private async Task LaunchConfiguredProgramsAsync(uint sessionId)
+        {
+            foreach (var item in _autoLaunchItems)
+            {
+                if (item == null || !item.Enabled || string.IsNullOrWhiteSpace(item.Path))
+                {
+                    continue;
+                }
+
+                if (item.DelaySeconds > 0)
+                {
+                    UpdateStatus(string.Format("等待 {0} 秒后启动: {1}...", item.DelaySeconds, item.Name));
+                    await Task.Delay(item.DelaySeconds * 1000);
+                }
+
                 try
                 {
-                    ChildSessionProcessLauncher.LaunchElevatedAsync(sessionId.Value, _autoLaunchTarget);
+                    var workDir = string.IsNullOrWhiteSpace(item.WorkingDirectory)
+                        ? Path.GetDirectoryName(Path.GetFullPath(item.Path))
+                        : item.WorkingDirectory;
+
+                    await ChildSessionProcessLauncher.LaunchElevatedAsync(
+                        sessionId,
+                        item.Path,
+                        item.Arguments ?? "",
+                        workDir ?? "");
+
+                    UpdateStatus("已自启动: " + (string.IsNullOrWhiteSpace(item.Name) ? Path.GetFileName(item.Path) : item.Name));
                 }
                 catch (Exception ex)
                 {
-                    UpdateStatus("自启动程序失败: " + ex.Message);
+                    UpdateStatus(string.Format("自启动 {0} 失败: {1}", item.Name, ex.Message));
                 }
             }
         }

@@ -93,9 +93,92 @@ class ChildSessionManager:
             logger.debug("读取 ChildSessionId 失败: %s", exc)
         return None
 
+    def get_child_session_config(self) -> dict:
+        """从全局配置读取桌面分身设置。"""
+        from src.config.config_repository import ConfigRepository
+        from src.config.paths import get_config_path
+
+        default_cfg = {
+            "enabled": True,
+            "resolution": "1920x1080",
+            "auto_launch_enabled": True,
+            "launch_delay_seconds": 2,
+            "auto_launch_programs": [],
+        }
+        try:
+            repo = ConfigRepository(get_config_path())
+            cfg, _, _ = repo.load_existing(allow_default_on_error=True)
+            if isinstance(cfg, dict):
+                cs = cfg.get("child_session")
+                if isinstance(cs, dict):
+                    merged = dict(default_cfg)
+                    merged.update(cs)
+                    return merged
+                # 兼容旧配置中的分辨率键
+                old_res = cfg.get("child_session_resolution")
+                if old_res:
+                    default_cfg["resolution"] = str(old_res)
+        except Exception as exc:
+            logger.debug("读取 child_session 配置失败: %s", exc)
+        return default_cfg
+
+    def save_child_session_config(self, cs_config: dict) -> bool:
+        """将桌面分身设置保存至全局配置。"""
+        from src.config.config_repository import ConfigRepository
+        from src.config.paths import get_config_path
+
+        try:
+            repo = ConfigRepository(get_config_path())
+            res = repo.update({
+                "child_session": cs_config,
+                "child_session_resolution": cs_config.get("resolution", "1920x1080"),
+            })
+            return res.ok
+        except Exception as exc:
+            logger.error("保存 child_session 配置失败: %s", exc)
+            return False
+
+    def launch_program_in_child_session(
+        self,
+        executable_path: str,
+        arguments: str = "",
+        working_dir: str = "",
+    ) -> bool:
+        """向当前运行的桌面分身 (Child Session) 中即时注入启动程序。
+        
+        使用与顶栏「运行程序」完全一致的 Windows 任务计划程序 COM 接口，
+        赋予最高管理员权限并绕过 UAC 拦截。
+        """
+        exe_path = self.get_avatar_exe_path()
+        if not os.path.isfile(exe_path):
+            logger.error("未找到 DesktopAvatar.exe: %s", exe_path)
+            return False
+
+        if not os.path.isfile(executable_path):
+            logger.error("目标启动程序不存在: %s", executable_path)
+            return False
+
+        cmd = [exe_path, "--launch-only", executable_path]
+        if arguments:
+            cmd.extend(["--args", arguments])
+        if working_dir:
+            cmd.extend(["--workdir", working_dir])
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+                timeout=10,
+            )
+            return proc.returncode == 0
+        except Exception as exc:
+            logger.error("注入启动程序失败: %s", exc)
+            return False
+
     def launch_avatar(
         self,
         launch_target: Optional[str] = None,
+        launch_config_file: Optional[str] = None,
         width: int = 1920,
         height: int = 1080,
         title: Optional[str] = None,
@@ -103,6 +186,7 @@ class ChildSessionManager:
         """启动桌面分身窗口。
 
         :param launch_target: 分身就绪后自动拉起的目标程序路径 (可选)
+        :param launch_config_file: 包含自启程序列表的配置文件路径 (可选)
         :param width: 分身虚拟桌面的宽度 (默认 1920)
         :param height: 分身虚拟桌面的高度 (默认 1080)
         :param title: 分身窗口标题 (可选)
@@ -117,9 +201,43 @@ class ChildSessionManager:
             logger.info("DesktopAvatar 已经在运行中")
             return True
 
+        # 如果未显式提供 launch_config_file，自动检查配置并输出自启动清单
+        if not launch_config_file and not launch_target:
+            try:
+                import json
+                cfg = self.get_child_session_config()
+                if cfg.get("auto_launch_enabled", True):
+                    progs = cfg.get("auto_launch_programs", [])
+                    enabled_progs = [p for p in progs if isinstance(p, dict) and p.get("enabled", True)]
+                    if enabled_progs:
+                        # 确保转换为 C# AutoLaunchItem 字段
+                        items = []
+                        init_delay = int(cfg.get("launch_delay_seconds", 2))
+                        for idx, p in enumerate(enabled_progs):
+                            item_delay = int(p.get("delay_seconds", 0))
+                            if idx == 0 and init_delay > 0 and item_delay == 0:
+                                item_delay = init_delay
+                            items.append({
+                                "Name": str(p.get("name") or os.path.basename(p.get("path", ""))),
+                                "Path": str(p.get("path", "")),
+                                "Arguments": str(p.get("args", "")),
+                                "WorkingDirectory": str(p.get("working_dir", "")),
+                                "DelaySeconds": item_delay,
+                                "Enabled": True,
+                            })
+                        temp_dir = os.path.dirname(exe_path)
+                        cfg_file = os.path.join(temp_dir, "auto_launch_cache.json")
+                        with open(cfg_file, "w", encoding="utf-8") as f:
+                            json.dump(items, f, ensure_ascii=False, indent=2)
+                        launch_config_file = cfg_file
+            except Exception as exc:
+                logger.warning("生成自启动清单失败: %s", exc)
+
         cmd = [exe_path, "--width", str(width), "--height", str(height)]
         if launch_target:
             cmd.extend(["--launch", launch_target])
+        if launch_config_file and os.path.isfile(launch_config_file):
+            cmd.extend(["--launch-config", launch_config_file])
         if title:
             cmd.extend(["--title", title])
 

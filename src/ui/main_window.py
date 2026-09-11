@@ -37,6 +37,7 @@ from src.ui.background import BackgroundWidget, resolve_background_path
 from src.ui.common import deep_update_dict
 from src.ui.deck_store import DeckStore
 from src.ui.disclaimer import show_disclaimer_dialog
+from src.ui.pages.avatar_settings_page import AvatarSettingsPage
 from src.ui.pages.card_priority_page import CardPriorityPage
 from src.ui.pages.config_page import ConfigPage
 from src.ui.pages.dashboard_page import DashboardPage
@@ -339,11 +340,14 @@ class ShadowverseUI(QMainWindow):
         )
         self.statistics_page = StatisticsPage(self)
         self.config_page = ConfigPage(self)
+        self.avatar_settings_page = AvatarSettingsPage(self)
         self.logs_page = LogsPage(self)
         self.config_page.config_saved.connect(self._on_config_saved)
         self.deck_rotation_page.config_saved.connect(
             lambda _config: self._load_config_into_dashboard()
         )
+        self.avatar_settings_page.avatar_requested.connect(self._handle_desktop_avatar_action)
+        self.avatar_settings_page.log_requested.connect(self.append_log)
 
         # 为现有卡牌与效果编辑器保留兼容别名。
         self.card_select_page = self.deck_workspace_page
@@ -358,9 +362,10 @@ class ShadowverseUI(QMainWindow):
             "rotation": self.deck_center_page,
             "stats": self.statistics_page,
             "settings": self.config_page,
+            "avatar_settings": self.avatar_settings_page,
             "logs": self.logs_page,
         }
-        for key in ("dashboard", "deck_center", "stats", "settings", "logs"):
+        for key in ("dashboard", "deck_center", "stats", "settings", "avatar_settings", "logs"):
             self.stacked_widget.addWidget(self.pages[key])
         self.stacked_widget.currentChanged.connect(self._sync_sidebar_selection)
 
@@ -419,6 +424,7 @@ class ShadowverseUI(QMainWindow):
             ("deck_center", "卡组中心"),
             ("stats", "统计数据"),
             ("settings", "参数设置"),
+            ("avatar_settings", "桌面分身设置"),
             ("logs", "运行日志"),
         ]
         for key, label in nav_items:
@@ -515,6 +521,11 @@ class ShadowverseUI(QMainWindow):
         elif key == "settings":
             try:
                 self.config_page.refresh_config_display()
+            except Exception:
+                pass
+        elif key == "avatar_settings":
+            try:
+                self.avatar_settings_page.load_config()
             except Exception:
                 pass
 

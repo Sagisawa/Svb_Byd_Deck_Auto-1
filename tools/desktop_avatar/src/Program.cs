@@ -1,9 +1,32 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 namespace DesktopAvatar
 {
+    internal sealed class AutoLaunchItem
+    {
+        public string Name { get; set; }
+        public string Path { get; set; }
+        public string Arguments { get; set; }
+        public string WorkingDirectory { get; set; }
+        public int DelaySeconds { get; set; }
+        public bool Enabled { get; set; }
+
+        public AutoLaunchItem()
+        {
+            Name = "";
+            Path = "";
+            Arguments = "";
+            WorkingDirectory = "";
+            DelaySeconds = 0;
+            Enabled = true;
+        }
+    }
+
     internal static class Program
     {
         [STAThread]
@@ -15,6 +38,10 @@ namespace DesktopAvatar
             int width = 1920;
             int height = 1080;
             string launchTarget = null;
+            string launchConfigFile = null;
+            string launchOnlyPath = null;
+            string launchOnlyArgs = null;
+            string launchOnlyWorkDir = null;
             string title = null;
             bool enableOnly = false;
             bool logoffOnly = false;
@@ -34,6 +61,22 @@ namespace DesktopAvatar
                 {
                     launchTarget = args[++i];
                 }
+                else if (string.Equals(arg, "--launch-config", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    launchConfigFile = args[++i];
+                }
+                else if (string.Equals(arg, "--launch-only", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    launchOnlyPath = args[++i];
+                }
+                else if (string.Equals(arg, "--args", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    launchOnlyArgs = args[++i];
+                }
+                else if (string.Equals(arg, "--workdir", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    launchOnlyWorkDir = args[++i];
+                }
                 else if (string.Equals(arg, "--title", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
                 {
                     title = args[++i];
@@ -45,6 +88,45 @@ namespace DesktopAvatar
                 else if (string.Equals(arg, "--logoff-only", StringComparison.OrdinalIgnoreCase))
                 {
                     logoffOnly = true;
+                }
+            }
+
+            // 单次注入启动模式（向已运行的子会话直接拉起进程）
+            if (!string.IsNullOrEmpty(launchOnlyPath))
+            {
+                var sessionId = ChildSessionNativeMethods.TryGetChildSessionId();
+                if (!sessionId.HasValue)
+                {
+                    MessageBox.Show(
+                        "未检测到活动的桌面分身 (Child Session) 会话，请先开启桌面分身。",
+                        "提示",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return 1;
+                }
+
+                try
+                {
+                    var workDir = string.IsNullOrEmpty(launchOnlyWorkDir)
+                        ? Path.GetDirectoryName(Path.GetFullPath(launchOnlyPath))
+                        : launchOnlyWorkDir;
+
+                    ChildSessionProcessLauncher.LaunchElevatedAsync(
+                        sessionId.Value,
+                        launchOnlyPath,
+                        launchOnlyArgs ?? "",
+                        workDir ?? "").Wait();
+
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(
+                        "向分身注入启动程序失败：\n" + ex.Message,
+                        "启动错误",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    return 2;
                 }
             }
 
@@ -100,8 +182,47 @@ namespace DesktopAvatar
                 return 0;
             }
 
+            var autoLaunchItems = new List<AutoLaunchItem>();
+            if (!string.IsNullOrEmpty(launchConfigFile) && File.Exists(launchConfigFile))
+            {
+                try
+                {
+                    var content = File.ReadAllText(launchConfigFile);
+                    var serializer = new JavaScriptSerializer();
+                    if (content.TrimStart().StartsWith("["))
+                    {
+                        var list = serializer.Deserialize<List<AutoLaunchItem>>(content);
+                        if (list != null) autoLaunchItems.AddRange(list);
+                    }
+                    else
+                    {
+                        var dict = serializer.Deserialize<Dictionary<string, object>>(content);
+                        if (dict != null && dict.ContainsKey("auto_launch_programs"))
+                        {
+                            var progsJson = serializer.Serialize(dict["auto_launch_programs"]);
+                            var list = serializer.Deserialize<List<AutoLaunchItem>>(progsJson);
+                            if (list != null) autoLaunchItems.AddRange(list);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("[WARN] 读取启动配置清单失败: " + ex.Message);
+                }
+            }
+
+            if (!string.IsNullOrEmpty(launchTarget))
+            {
+                autoLaunchItems.Add(new AutoLaunchItem
+                {
+                    Path = launchTarget,
+                    Name = Path.GetFileName(launchTarget),
+                    Enabled = true
+                });
+            }
+
             var desktopSize = new Size(Math.Max(640, width), Math.Max(480, height));
-            Application.Run(new AvatarForm(desktopSize, launchTarget, title));
+            Application.Run(new AvatarForm(desktopSize, autoLaunchItems, title));
             return 0;
         }
     }
