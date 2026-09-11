@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import logging
 import os
@@ -135,8 +136,14 @@ class TrackerBridge:
                 return float("inf")
             return time.time() - self._latest_timestamp
 
-    def is_fresh(self, max_age: float = 8.0) -> bool:
+    def is_fresh(self, max_age: float = 30.0) -> bool:
         return self.get_snapshot_age() <= max_age
+
+    def clear_snapshot(self) -> None:
+        """显式清空当前缓存的快照，用于对战结束或对局重置时防止旧数据残留。"""
+        with self._lock:
+            self._latest_snapshot = None
+            self._latest_timestamp = 0.0
 
     def subscribe(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         with self._lock:
@@ -246,9 +253,20 @@ class TrackerBridge:
             if not isinstance(snapshot, dict):
                 return False
 
+            now = time.time()
+            record_time = now
+            if isinstance(data, dict) and "timestamp" in data:
+                try:
+                    dt = datetime.fromisoformat(str(data["timestamp"]))
+                    parsed_ts = dt.timestamp()
+                    if 0 < parsed_ts <= now + 5.0:
+                        record_time = parsed_ts
+                except Exception:
+                    record_time = now
+
             with self._lock:
                 self._latest_snapshot = snapshot
-                self._latest_timestamp = time.time()
+                self._latest_timestamp = record_time
                 subscribers = list(self._subscribers)
 
             for sub in subscribers:

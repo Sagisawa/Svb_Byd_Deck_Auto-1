@@ -60,7 +60,7 @@ class SnapshotAdapter:
                 return False
         return True
 
-    def is_available(self, max_age: float = 6.0) -> bool:
+    def is_available(self, max_age: float = 30.0) -> bool:
         """检查内存快照是否可用且新鲜。
 
         若用户选择了不存在的日志路径、或者日志文件已过时超过 max_age 秒，
@@ -69,7 +69,10 @@ class SnapshotAdapter:
         字段以默认值被当成真实数据使用。
         """
         if not self.bridge.is_fresh(max_age=max_age):
-            return False
+            # 若接近或刚超过阈值，尝试主动从文件末尾补读最新行，避免尾读线程瞬时延迟
+            self.bridge.refresh_from_file()
+            if not self.bridge.is_fresh(max_age=max_age):
+                return False
         snap = self.bridge.get_snapshot(force_refresh=False)
         if not snap or not isinstance(snap, dict):
             return False
@@ -85,6 +88,10 @@ class SnapshotAdapter:
                 )
             return False
         return True
+
+    def clear(self) -> None:
+        """显式清空快照缓存，防止对战结束后旧数据残留。"""
+        self.bridge.clear_snapshot()
 
     # -------------------------------------------------------------------------
     # Turn, side, and leader resources
