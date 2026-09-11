@@ -245,6 +245,7 @@ class DashboardPage(QWidget):
     screenshot_requested = pyqtSignal()
     navigate_requested = pyqtSignal(str)
     disclaimer_requested = pyqtSignal()
+    avatar_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -315,6 +316,11 @@ class DashboardPage(QWidget):
         action_layout = QHBoxLayout(self.banner_actions)
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(8)
+        self.avatar_button = QPushButton("桌面分身")
+        self.avatar_button.setObjectName("AvatarButton")
+        self.avatar_button.setToolTip("启动独立 Windows Child Session 桌面分身，隔离键鼠操作实现真后台")
+        self.avatar_button.clicked.connect(self.avatar_requested)
+
         self.start_button = QPushButton("开始运行")
         self.start_button.setObjectName("PrimaryButton")
         self.start_button.clicked.connect(self.start_requested)
@@ -328,6 +334,7 @@ class DashboardPage(QWidget):
         self.stop_button.setObjectName("DangerButton")
         self.stop_button.clicked.connect(self.stop_requested)
         for button in (
+            self.avatar_button,
             self.start_button,
             self.pause_button,
             self.resume_button,

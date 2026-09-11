@@ -116,6 +116,8 @@ Thumbs.db
 config.json
 /saved_decks/*.json
 *.bat
+!tools/desktop_avatar/build.bat
+tools/desktop_avatar/bin/
 /.claude
 claude.md
 /debug*

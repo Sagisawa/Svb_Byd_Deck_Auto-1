@@ -371,6 +371,7 @@ class ShadowverseUI(QMainWindow):
         self.dashboard_page.screenshot_requested.connect(self.show_screenshot_preview)
         self.dashboard_page.navigate_requested.connect(self.navigate)
         self.dashboard_page.disclaimer_requested.connect(self.show_about_disclaimer)
+        self.dashboard_page.avatar_requested.connect(self._handle_desktop_avatar_action)
         self.deck_workspace_page.log_requested.connect(self.append_log)
         self.deck_workspace_page.active_deck_changed.connect(self.state.set_active_deck)
         self.deck_workspace_page.device_qr_requested.connect(
@@ -598,6 +599,57 @@ class ShadowverseUI(QMainWindow):
         )
         self._device_check_thread.start()
         return
+
+    def _handle_desktop_avatar_action(self) -> None:
+        from src.device.child_session.manager import get_child_session_manager
+
+        mgr = get_child_session_manager()
+        if not mgr.is_supported():
+            QMessageBox.warning(
+                self,
+                "系统不受支持",
+                "桌面分身功能基于 Windows 10/11 的 Child Session 与 RDP 终端服务特性，当前系统环境不支持。",
+            )
+            return
+
+        if not mgr.is_available():
+            QMessageBox.warning(
+                self,
+                "组件缺失",
+                f"未找到桌面分身程序：\n{mgr.get_avatar_exe_path()}\n\n请先执行 tools/desktop_avatar/build.bat 编译程序。",
+            )
+            return
+
+        if mgr.is_running():
+            reply = QMessageBox.question(
+                self,
+                "桌面分身正在运行",
+                "检测到桌面分身程序已在运行中。\n\n是否需要关闭并注销当前分身会话？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                mgr.terminate_avatar(logoff_session=True)
+                self.append_log("已终止并注销桌面分身会话。")
+            return
+
+        reply = QMessageBox.information(
+            self,
+            "启动桌面分身提示",
+            "【桌面分身功能说明】\n\n"
+            "1. 独立运行：桌面分身将在后台创建一个完全独立的虚拟桌面（Session），游戏与脚本在其中运行，不抢占物理鼠标。\n"
+            "2. 首次登录：Windows 会弹出凭据输入框，请输入您当前电脑的登录密码（本地 Loopback 认证）。\n"
+            "3. 兼容性提示：若系统开启了 RDP Wrapper / SuperRDP，可能与本功能互斥。\n\n"
+            "是否立即打开桌面分身窗口？",
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Ok,
+        )
+        if reply == QMessageBox.Ok:
+            success = mgr.launch_avatar(width=1280, height=720, title="影之诗桌面分身 (Svb Desktop Avatar)")
+            if success:
+                self.append_log("已启动桌面分身伴侣程序 (DesktopAvatar.exe)。")
+            else:
+                self.append_log("启动桌面分身程序失败，请查看日志。")
 
     def _save_device_config(self, values: Dict[str, Any]) -> None:
         try:

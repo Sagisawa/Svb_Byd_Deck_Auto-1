@@ -293,6 +293,33 @@ QPushButton#DangerButton:disabled {
     border-color: #323242;
 }
 
+QPushButton[variant="avatar"], QToolButton[variant="avatar"],
+QPushButton#AvatarButton {
+    color: #1e1e2e;
+    background-color: #cba6f7;
+    border-color: #cba6f7;
+    font-weight: 600;
+}
+
+QPushButton[variant="avatar"]:hover, QToolButton[variant="avatar"]:hover,
+QPushButton#AvatarButton:hover {
+    background-color: #dcb8ff;
+    border-color: #dcb8ff;
+}
+
+QPushButton[variant="avatar"]:pressed, QToolButton[variant="avatar"]:pressed,
+QPushButton#AvatarButton:pressed {
+    background-color: #b48ded;
+    border-color: #b48ded;
+}
+
+QPushButton[variant="avatar"]:disabled, QToolButton[variant="avatar"]:disabled,
+QPushButton#AvatarButton:disabled {
+    color: #6c7086;
+    background-color: #242434;
+    border-color: #323242;
+}
+
 QPushButton[variant="success"], QToolButton[variant="success"] {
     color: #1e1e2e;
     background-color: #a6e3a1;
