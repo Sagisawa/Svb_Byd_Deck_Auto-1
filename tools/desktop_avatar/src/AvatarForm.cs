@@ -7,15 +7,17 @@ namespace DesktopAvatar
 {
     internal sealed class AvatarForm : Form
     {
-        private readonly Size _desktopSize;
+        private Size _currentDesktopSize;
         private readonly string _autoLaunchTarget;
         private readonly RdpActiveXHost _rdpHost;
         private readonly Panel _topPanel;
         private readonly Label _lblStatus;
+        private readonly ComboBox _cbResolution;
+        private readonly Button _btnFitWindow;
+        private readonly Button _btnSmartSizing;
         private readonly Button _btnReconnect;
         private readonly Button _btnWinD;
         private readonly Button _btnWinTab;
-        private readonly Button _btnSmartSizing;
         private readonly Button _btnTopMost;
         private readonly Button _btnLaunch;
         private readonly Button _btnLogoff;
@@ -25,13 +27,13 @@ namespace DesktopAvatar
 
         public AvatarForm(Size desktopSize, string autoLaunchTarget = null, string windowTitle = null)
         {
-            _desktopSize = desktopSize;
+            _currentDesktopSize = desktopSize;
             _autoLaunchTarget = autoLaunchTarget;
 
             Text = string.IsNullOrEmpty(windowTitle) ? "影之诗桌面分身 (Svb Desktop Avatar)" : windowTitle;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(Math.Min(1280, desktopSize.Width), Math.Min(720, desktopSize.Height) + 40);
-            MinimumSize = new Size(640, 400);
+            ClientSize = new Size(Math.Min(1280, desktopSize.Width), Math.Min(720, desktopSize.Height) + 38);
+            MinimumSize = new Size(820, 480);
             BackColor = Color.FromArgb(24, 24, 37); // Dark theme
 
             // 顶部工具栏
@@ -52,15 +54,51 @@ namespace DesktopAvatar
                 Location = new Point(10, 9)
             };
 
-            int rightX = ClientSize.Width - 10;
+            // 分辨率下拉选择框
+            _cbResolution = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                FlatStyle = FlatStyle.Flat,
+                DrawMode = DrawMode.OwnerDrawFixed,
+                BackColor = Color.FromArgb(49, 50, 68),
+                ForeColor = Color.FromArgb(205, 214, 244),
+                Font = new Font("Segoe UI", 9f),
+                Width = 160,
+                Height = 28,
+                Margin = new Padding(3, 4, 3, 2),
+                Cursor = Cursors.Hand
+            };
 
-            _btnLogoff = CreateButton("注销会话", 72);
-            _btnLaunch = CreateButton("运行程序", 72);
-            _btnTopMost = CreateButton("置顶: 关", 64);
+            _cbResolution.DrawItem += (s, e) =>
+            {
+                if (e.Index < 0) return;
+                var cb = (ComboBox)s;
+                bool isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+                using (var bgBrush = new SolidBrush(isSelected ? Color.FromArgb(69, 71, 90) : Color.FromArgb(40, 40, 60)))
+                using (var textBrush = new SolidBrush(Color.FromArgb(205, 214, 244)))
+                {
+                    e.Graphics.FillRectangle(bgBrush, e.Bounds);
+                    string text = cb.Items[e.Index].ToString();
+                    var sf = new StringFormat
+                    {
+                        LineAlignment = StringAlignment.Center,
+                        Alignment = StringAlignment.Near
+                    };
+                    var textRect = new Rectangle(e.Bounds.X + 4, e.Bounds.Y, e.Bounds.Width - 4, e.Bounds.Height);
+                    e.Graphics.DrawString(text, cb.Font, textBrush, textRect, sf);
+                }
+            };
+
+            PopulateResolutionPresets();
+
+            _btnFitWindow = CreateButton("1:1 视口", 64);
             _btnSmartSizing = CreateButton("自适应: 开", 72);
-            _btnWinTab = CreateButton("Win+Tab", 68);
-            _btnWinD = CreateButton("Win+D", 58);
             _btnReconnect = CreateButton("重连", 50);
+            _btnWinD = CreateButton("Win+D", 58);
+            _btnWinTab = CreateButton("Win+Tab", 68);
+            _btnTopMost = CreateButton("置顶: 关", 64);
+            _btnLaunch = CreateButton("运行程序", 72);
+            _btnLogoff = CreateButton("注销会话", 72);
 
             var flowPanel = new FlowLayoutPanel
             {
@@ -72,10 +110,12 @@ namespace DesktopAvatar
                 Margin = new Padding(0)
             };
 
+            flowPanel.Controls.Add(_cbResolution);
+            flowPanel.Controls.Add(_btnFitWindow);
+            flowPanel.Controls.Add(_btnSmartSizing);
             flowPanel.Controls.Add(_btnReconnect);
             flowPanel.Controls.Add(_btnWinD);
             flowPanel.Controls.Add(_btnWinTab);
-            flowPanel.Controls.Add(_btnSmartSizing);
             flowPanel.Controls.Add(_btnTopMost);
             flowPanel.Controls.Add(_btnLaunch);
             flowPanel.Controls.Add(_btnLogoff);
@@ -95,10 +135,12 @@ namespace DesktopAvatar
             Controls.Add(_topPanel);
 
             // 绑定工具栏事件
+            _cbResolution.SelectionChangeCommitted += OnResolutionSelectionChanged;
+            _btnFitWindow.Click += OnFitWindowClicked;
+            _btnSmartSizing.Click += OnToggleSmartSizing;
             _btnReconnect.Click += (s, e) => TriggerConnect();
             _btnWinD.Click += (s, e) => { try { _rdpHost.SendShowDesktopShortcut(); } catch { } };
             _btnWinTab.Click += (s, e) => { try { _rdpHost.SendTaskViewShortcut(); } catch { } };
-            _btnSmartSizing.Click += OnToggleSmartSizing;
             _btnTopMost.Click += OnToggleTopMost;
             _btnLaunch.Click += OnLaunchProgramClicked;
             _btnLogoff.Click += OnLogoffClicked;
@@ -122,6 +164,124 @@ namespace DesktopAvatar
             return btn;
         }
 
+        private void PopulateResolutionPresets()
+        {
+            var primary = Screen.PrimaryScreen.Bounds;
+            var presets = new ResolutionItem[]
+            {
+                new ResolutionItem("1920 × 1080 (1080P 推荐)", 1920, 1080),
+                new ResolutionItem("2560 × 1440 (2K 超清)", 2560, 1440),
+                new ResolutionItem("3840 × 2160 (4K 极清)", 3840, 2160),
+                new ResolutionItem("1600 × 900 (900P)", 1600, 900),
+                new ResolutionItem("1366 × 768", 1366, 768),
+                new ResolutionItem("1280 × 720 (720P)", 1280, 720),
+                new ResolutionItem(string.Format("跟随主屏幕 ({0}×{1})", primary.Width, primary.Height), primary.Width, primary.Height),
+                new ResolutionItem("自定义分辨率...", -1, -1)
+            };
+
+            _cbResolution.Items.Clear();
+            _cbResolution.Items.AddRange(presets);
+
+            SyncResolutionDropdown();
+        }
+
+        private void SyncResolutionDropdown()
+        {
+            int matchedIndex = -1;
+            for (int i = 0; i < _cbResolution.Items.Count; i++)
+            {
+                var item = (ResolutionItem)_cbResolution.Items[i];
+                if (item.Width == _currentDesktopSize.Width && item.Height == _currentDesktopSize.Height)
+                {
+                    matchedIndex = i;
+                    break;
+                }
+            }
+
+            if (matchedIndex >= 0)
+            {
+                _cbResolution.SelectedIndex = matchedIndex;
+            }
+            else
+            {
+                var customItem = new ResolutionItem(
+                    string.Format("当前: {0}×{1}", _currentDesktopSize.Width, _currentDesktopSize.Height),
+                    _currentDesktopSize.Width,
+                    _currentDesktopSize.Height);
+                _cbResolution.Items.Insert(0, customItem);
+                _cbResolution.SelectedIndex = 0;
+            }
+        }
+
+        private void OnResolutionSelectionChanged(object sender, EventArgs e)
+        {
+            if (_cbResolution.SelectedItem == null) return;
+            var item = (ResolutionItem)_cbResolution.SelectedItem;
+
+            if (item.Width == -1)
+            {
+                using (var dlg = new CustomResolutionDialog(_currentDesktopSize.Width, _currentDesktopSize.Height))
+                {
+                    if (dlg.ShowDialog(this) == DialogResult.OK)
+                    {
+                        var customSize = dlg.SelectedResolution;
+                        ApplyNewResolution(customSize, string.Format("自定义 ({0}×{1})", customSize.Width, customSize.Height));
+                    }
+                    else
+                    {
+                        SyncResolutionDropdown();
+                    }
+                }
+                return;
+            }
+
+            if (item.Width == _currentDesktopSize.Width && item.Height == _currentDesktopSize.Height)
+            {
+                return;
+            }
+
+            ApplyNewResolution(new Size(item.Width, item.Height), item.DisplayName);
+        }
+
+        private void ApplyNewResolution(Size newSize, string displayName)
+        {
+            _currentDesktopSize = newSize;
+            UpdateStatus("正在切换分辨率至 " + displayName + "...");
+            try
+            {
+                _rdpHost.ChangeDesktopResolution(_currentDesktopSize);
+                UpdateStatus(string.Format("已应用分辨率: {0}×{1}", _currentDesktopSize.Width, _currentDesktopSize.Height));
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus("分辨率切换失败: " + ex.Message);
+            }
+            SyncResolutionDropdown();
+        }
+
+        private void OnFitWindowClicked(object sender, EventArgs e)
+        {
+            var screen = Screen.FromControl(this).WorkingArea;
+            int targetClientW = _currentDesktopSize.Width;
+            int targetClientH = _currentDesktopSize.Height + _topPanel.Height;
+
+            if (targetClientW > screen.Width || targetClientH > screen.Height)
+            {
+                WindowState = FormWindowState.Maximized;
+                UpdateStatus("窗口已最大化以适应高分辨率");
+            }
+            else
+            {
+                WindowState = FormWindowState.Normal;
+                ClientSize = new Size(targetClientW, targetClientH);
+                Location = new Point(
+                    screen.Left + Math.Max(0, (screen.Width - Width) / 2),
+                    screen.Top + Math.Max(0, (screen.Height - Height) / 2)
+                );
+                UpdateStatus(string.Format("已恢复 1:1 视口 ({0}×{1})", _currentDesktopSize.Width, _currentDesktopSize.Height));
+            }
+        }
+
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
@@ -140,10 +300,10 @@ namespace DesktopAvatar
 
         private void TriggerConnect()
         {
-            UpdateStatus("正在连接 Child Session (localhost)...");
+            UpdateStatus(string.Format("正在连接 Child Session ({0}×{1})...", _currentDesktopSize.Width, _currentDesktopSize.Height));
             try
             {
-                _rdpHost.ConnectToChildSession(_desktopSize);
+                _rdpHost.ConnectToChildSession(_currentDesktopSize);
             }
             catch (Exception ex)
             {
@@ -165,8 +325,8 @@ namespace DesktopAvatar
         {
             var sessionId = ChildSessionNativeMethods.TryGetChildSessionId();
             string status = sessionId.HasValue
-                ? string.Format("已连接桌面分身 (Session {0})", sessionId.Value)
-                : "已连接桌面分身";
+                ? string.Format("已连接桌面分身 (Session {0}, {1}×{2})", sessionId.Value, _currentDesktopSize.Width, _currentDesktopSize.Height)
+                : string.Format("已连接桌面分身 ({0}×{1})", _currentDesktopSize.Width, _currentDesktopSize.Height);
             UpdateStatus(status);
 
             // 自动拉起目标程序
@@ -251,6 +411,115 @@ namespace DesktopAvatar
                     UpdateStatus("注销失败: " + ex.Message);
                 }
             }
+        }
+    }
+
+    internal sealed class ResolutionItem
+    {
+        public string DisplayName { get; }
+        public int Width { get; }
+        public int Height { get; }
+
+        public ResolutionItem(string displayName, int width, int height)
+        {
+            DisplayName = displayName;
+            Width = width;
+            Height = height;
+        }
+
+        public override string ToString() => DisplayName;
+    }
+
+    internal sealed class CustomResolutionDialog : Form
+    {
+        private readonly NumericUpDown _numWidth;
+        private readonly NumericUpDown _numHeight;
+
+        public Size SelectedResolution => new Size((int)_numWidth.Value, (int)_numHeight.Value);
+
+        public CustomResolutionDialog(int currentWidth, int currentHeight)
+        {
+            Text = "自定义桌面分辨率";
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            StartPosition = FormStartPosition.CenterParent;
+            ClientSize = new Size(290, 150);
+            BackColor = Color.FromArgb(30, 30, 46);
+            ForeColor = Color.FromArgb(205, 214, 244);
+            Font = new Font("Segoe UI", 9f);
+
+            var lblW = new Label
+            {
+                Text = "宽度 (Width):",
+                Location = new Point(20, 22),
+                AutoSize = true
+            };
+            _numWidth = new NumericUpDown
+            {
+                Location = new Point(130, 20),
+                Width = 130,
+                Minimum = 640,
+                Maximum = 7680,
+                Value = MathHelper.Clamp(currentWidth, 640, 7680),
+                BackColor = Color.FromArgb(49, 50, 68),
+                ForeColor = Color.FromArgb(205, 214, 244)
+            };
+
+            var lblH = new Label
+            {
+                Text = "高度 (Height):",
+                Location = new Point(20, 58),
+                AutoSize = true
+            };
+            _numHeight = new NumericUpDown
+            {
+                Location = new Point(130, 56),
+                Width = 130,
+                Minimum = 480,
+                Maximum = 4320,
+                Value = MathHelper.Clamp(currentHeight, 480, 4320),
+                BackColor = Color.FromArgb(49, 50, 68),
+                ForeColor = Color.FromArgb(205, 214, 244)
+            };
+
+            var btnOk = new Button
+            {
+                Text = "确定",
+                Location = new Point(100, 102),
+                Width = 75,
+                Height = 30,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(203, 166, 247), // Mauve
+                ForeColor = Color.FromArgb(30, 30, 46),
+                DialogResult = DialogResult.OK,
+                Cursor = Cursors.Hand
+            };
+            btnOk.FlatAppearance.BorderSize = 0;
+
+            var btnCancel = new Button
+            {
+                Text = "取消",
+                Location = new Point(185, 102),
+                Width = 75,
+                Height = 30,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(49, 50, 68),
+                ForeColor = Color.FromArgb(205, 214, 244),
+                DialogResult = DialogResult.Cancel,
+                Cursor = Cursors.Hand
+            };
+            btnCancel.FlatAppearance.BorderSize = 0;
+
+            AcceptButton = btnOk;
+            CancelButton = btnCancel;
+
+            Controls.Add(lblW);
+            Controls.Add(_numWidth);
+            Controls.Add(lblH);
+            Controls.Add(_numHeight);
+            Controls.Add(btnOk);
+            Controls.Add(btnCancel);
         }
     }
 }

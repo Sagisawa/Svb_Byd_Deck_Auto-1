@@ -96,15 +96,15 @@ class ChildSessionManager:
     def launch_avatar(
         self,
         launch_target: Optional[str] = None,
-        width: int = 1280,
-        height: int = 720,
+        width: int = 1920,
+        height: int = 1080,
         title: Optional[str] = None,
     ) -> bool:
         """启动桌面分身窗口。
 
         :param launch_target: 分身就绪后自动拉起的目标程序路径 (可选)
-        :param width: 分身虚拟桌面的宽度 (默认 1280)
-        :param height: 分身虚拟桌面的高度 (默认 720)
+        :param width: 分身虚拟桌面的宽度 (默认 1920)
+        :param height: 分身虚拟桌面的高度 (默认 1080)
         :param title: 分身窗口标题 (可选)
         :return: 是否成功启动进程
         """

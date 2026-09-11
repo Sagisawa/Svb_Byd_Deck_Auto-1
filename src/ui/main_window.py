@@ -16,6 +16,7 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -633,23 +634,92 @@ class ShadowverseUI(QMainWindow):
                 self.append_log("已终止并注销桌面分身会话。")
             return
 
-        reply = QMessageBox.information(
-            self,
-            "启动桌面分身提示",
-            "【桌面分身功能说明】\n\n"
-            "1. 独立运行：桌面分身将在后台创建一个完全独立的虚拟桌面（Session），游戏与脚本在其中运行，不抢占物理鼠标。\n"
-            "2. 首次登录：Windows 会弹出凭据输入框，请输入您当前电脑的登录密码（本地 Loopback 认证）。\n"
-            "3. 兼容性提示：若系统开启了 RDP Wrapper / SuperRDP，可能与本功能互斥。\n\n"
-            "是否立即打开桌面分身窗口？",
-            QMessageBox.Ok | QMessageBox.Cancel,
-            QMessageBox.Ok,
+        # 读取已保存的分辨率偏好
+        saved_res = "1920x1080"
+        try:
+            repo = ConfigRepository(get_config_path())
+            cfg, _, _ = repo.load_existing(allow_default_on_error=True)
+            if cfg and isinstance(cfg, dict):
+                saved_res = str(cfg.get("child_session_resolution") or "1920x1080")
+        except Exception:
+            pass
+
+        # 启动对话框，支持选择初始分辨率与使用提示
+        dlg = QDialog(self)
+        dlg.setWindowTitle("启动桌面分身")
+        dlg.setMinimumWidth(480)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(12)
+
+        info_label = QLabel(
+            "<b>【桌面分身功能说明】</b><br><br>"
+            "1. <b>独立运行</b>：桌面分身在后台创建完全隔离的虚拟桌面（Session），游戏与脚本在其中运行，不抢占物理鼠标。<br>"
+            "2. <b>首次登录</b>：Windows 会弹出凭据输入框，请输入您当前电脑的登录密码（本地 Loopback 认证）。<br>"
+            "3. <b>画质与缩放</b>：进入分身后，顶栏可随时调整分辨率，亦可点击「1:1 视口」消除缩放发虚。<br>"
+            "4. <b>兼容性</b>：若系统启用了 RDP Wrapper / SuperRDP，可能存在冲突。"
         )
-        if reply == QMessageBox.Ok:
-            success = mgr.launch_avatar(width=1280, height=720, title="影之诗桌面分身 (Svb Desktop Avatar)")
-            if success:
-                self.append_log("已启动桌面分身伴侣程序 (DesktopAvatar.exe)。")
-            else:
-                self.append_log("启动桌面分身程序失败，请查看日志。")
+        info_label.setWordWrap(True)
+        info_label.setTextFormat(Qt.RichText)
+        layout.addWidget(info_label)
+
+        res_layout = QHBoxLayout()
+        res_label = QLabel("虚拟桌面分辨率:")
+        combo_res = QComboBox()
+
+        screen = QApplication.primaryScreen()
+        screen_w = screen.size().width() if screen else 1920
+        screen_h = screen.size().height() if screen else 1080
+
+        presets = [
+            ("1920 × 1080 (1080P 推荐 - 清晰)", 1920, 1080),
+            ("2560 × 1440 (2K 超清 - 适合高分屏)", 2560, 1440),
+            ("3840 × 2160 (4K 极清)", 3840, 2160),
+            ("1600 × 900 (900P)", 1600, 900),
+            ("1280 × 720 (720P - 低分辨率)", 1280, 720),
+            (f"跟随屏幕原生 ({screen_w} × {screen_h})", screen_w, screen_h),
+        ]
+
+        selected_idx = 0
+        for i, (label, w, h) in enumerate(presets):
+            combo_res.addItem(label, (w, h))
+            if f"{w}x{h}" == saved_res:
+                selected_idx = i
+
+        combo_res.setCurrentIndex(selected_idx)
+        res_layout.addWidget(res_label)
+        res_layout.addWidget(combo_res, 1)
+        layout.addLayout(res_layout)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch(1)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_launch = QPushButton("启动分身")
+        btn_launch.setObjectName("PrimaryButton")
+        btn_launch.clicked.connect(dlg.accept)
+        btn_layout.addWidget(btn_cancel)
+        btn_layout.addWidget(btn_launch)
+        layout.addLayout(btn_layout)
+
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        chosen_w, chosen_h = combo_res.currentData()
+        try:
+            repo = ConfigRepository(get_config_path())
+            repo.update({"child_session_resolution": f"{chosen_w}x{chosen_h}"})
+        except Exception:
+            pass
+
+        success = mgr.launch_avatar(
+            width=chosen_w,
+            height=chosen_h,
+            title="影之诗桌面分身 (Svb Desktop Avatar)"
+        )
+        if success:
+            self.append_log(f"已启动桌面分身伴侣程序 (分辨率: {chosen_w}×{chosen_h})。")
+        else:
+            self.append_log("启动桌面分身程序失败，请查看日志。")
 
     def _save_device_config(self, values: Dict[str, Any]) -> None:
         try:

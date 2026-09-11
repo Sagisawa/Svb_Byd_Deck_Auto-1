@@ -12,8 +12,8 @@ namespace DesktopAvatar
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            int width = 1280;
-            int height = 720;
+            int width = 1920;
+            int height = 1080;
             string launchTarget = null;
             string title = null;
             bool enableOnly = false;

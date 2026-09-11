@@ -23,6 +23,8 @@ namespace DesktopAvatar
         private bool _smartSizingEnabled = true;
         private bool _sendSystemShortcutsToRemote = true;
         private bool _audioMuted = false;
+        private Size? _pendingReconnectDesktopSize;
+        private bool _disconnectRequested = false;
 
         internal event EventHandler ConnectionFailed;
         internal event EventHandler LoginCompleted;
@@ -116,20 +118,109 @@ namespace DesktopAvatar
             }
         }
 
+        internal bool ChangeDesktopResolution(Size desktopSize)
+        {
+            if (desktopSize.Width < 200 || desktopSize.Height < 200)
+            {
+                return false;
+            }
+
+            if (ConnectedState == 0)
+            {
+                ConnectToChildSession(desktopSize);
+                return true;
+            }
+
+            if (TryUpdateSessionDisplaySettings(desktopSize))
+            {
+                return true;
+            }
+
+            ReconnectToChildSession(desktopSize);
+            return true;
+        }
+
+        private bool TryUpdateSessionDisplaySettings(Size desktopSize)
+        {
+            try
+            {
+                var ocx = GetRequiredOcx();
+                InvokeComMethod(
+                    ocx,
+                    "UpdateSessionDisplaySettings",
+                    (uint)desktopSize.Width,
+                    (uint)desktopSize.Height,
+                    (uint)desktopSize.Width,
+                    (uint)desktopSize.Height,
+                    0u,
+                    100u,
+                    100u);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal void ReconnectToChildSession(Size desktopSize)
+        {
+            if (_disconnectRequested || _pendingReconnectDesktopSize.HasValue)
+            {
+                _pendingReconnectDesktopSize = desktopSize;
+                return;
+            }
+
+            if (ConnectedState == 0)
+            {
+                ConnectToChildSession(desktopSize);
+                return;
+            }
+
+            _pendingReconnectDesktopSize = desktopSize;
+            try
+            {
+                if (!DisconnectCore())
+                {
+                    _pendingReconnectDesktopSize = null;
+                    ConnectToChildSession(desktopSize);
+                }
+            }
+            catch
+            {
+                _pendingReconnectDesktopSize = null;
+                throw;
+            }
+        }
+
         internal void DisconnectSession()
+        {
+            _pendingReconnectDesktopSize = null;
+            _ = DisconnectCore();
+        }
+
+        private bool DisconnectCore()
         {
             if (IsHandleCreated)
             {
                 ChildSessionNativeMethods.ClearRdpInputWindowCache(Handle);
             }
 
-            if (ConnectedState != 0)
+            if (ConnectedState == 0)
             {
-                try
-                {
-                    InvokeComMethod(GetRequiredOcx(), "Disconnect");
-                }
-                catch { }
+                return false;
+            }
+
+            _disconnectRequested = true;
+            try
+            {
+                InvokeComMethod(GetRequiredOcx(), "Disconnect");
+                return true;
+            }
+            catch
+            {
+                _disconnectRequested = false;
+                throw;
             }
         }
 
@@ -307,7 +398,46 @@ namespace DesktopAvatar
 
         internal void OnDisconnectedInternal(int reason)
         {
+            if (_disconnectRequested)
+            {
+                _disconnectRequested = false;
+                if (_pendingReconnectDesktopSize.HasValue && !IsDisposed && !Disposing)
+                {
+                    try
+                    {
+                        BeginInvoke(new Action(ConnectPendingReconnect));
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        _pendingReconnectDesktopSize = null;
+                    }
+                }
+                Disconnected?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+
             Disconnected?.Invoke(this, EventArgs.Empty);
+        }
+
+        private async void ConnectPendingReconnect()
+        {
+            await System.Threading.Tasks.Task.Delay(800);
+
+            var desktopSize = _pendingReconnectDesktopSize;
+            _pendingReconnectDesktopSize = null;
+            if (!desktopSize.HasValue || IsDisposed || Disposing)
+            {
+                return;
+            }
+
+            try
+            {
+                ConnectToChildSession(desktopSize.Value);
+            }
+            catch
+            {
+                ConnectionFailed?.Invoke(this, EventArgs.Empty);
+            }
         }
 
         internal void OnFatalErrorInternal(int errorCode)
