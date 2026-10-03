@@ -378,14 +378,18 @@ class SnapshotAdapter:
             countdown = int(card.get("countdown", 0) or 0)
             is_amulet = (card_type in (2, 3)) or (countdown > 0)
 
+            can_attack_ldr = (uid in attack_leader_cards) or bool(card.get("can_attack_leader"))
+            can_attack_fld = (uid in attack_field_cards) or bool(card.get("can_attack_field"))
+            has_atk = (uid in attacked_cards) or bool(card.get("has_attacked"))
+
             # Determine follower_type ("green" | "yellow" | "amulet" | "normal")
             if is_amulet:
                 ftype = "amulet"
-            elif uid in attacked_cards:
+            elif has_atk and not can_attack_ldr and not can_attack_fld:
                 ftype = "normal"
-            elif uid in attack_leader_cards:
+            elif can_attack_ldr:
                 ftype = "green"  # Storm / can attack face
-            elif uid in attack_field_cards:
+            elif can_attack_fld:
                 ftype = "yellow"  # Rush / can attack followers only
             else:
                 ftype = "normal"
@@ -431,6 +435,10 @@ class SnapshotAdapter:
             countdown = int(card.get("countdown", 0) or 0)
             is_amulet = (card_type in (2, 3)) or (countdown > 0)
 
+            can_attack_ldr = (uid in attack_leader_cards) or bool(card.get("can_attack_leader"))
+            can_attack_fld = (uid in attack_field_cards) or bool(card.get("can_attack_field"))
+            has_atk = (uid in attacked_cards) or bool(card.get("has_attacked"))
+
             result.append({
                 "x": x,
                 "y": y,
@@ -442,9 +450,9 @@ class SnapshotAdapter:
                 "countdown": countdown,
                 "hp": int(card.get("life", 1) or 1),
                 "attack": int(card.get("attack", 0) or 0),
-                "can_attack_leader": uid in attack_leader_cards,
-                "can_attack_field": uid in attack_field_cards,
-                "attacked": uid in attacked_cards,
+                "can_attack_leader": can_attack_ldr,
+                "can_attack_field": can_attack_fld,
+                "attacked": has_atk,
             })
         return result
 

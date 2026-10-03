@@ -35,29 +35,89 @@ class TrackerBridge:
 
         self._stop_event = threading.Event()
         self._worker_thread: Optional[threading.Thread] = None
+        self._embedded_service: Optional[Any] = None
+        self._embedded_lock = threading.RLock()
 
     def _resolve_log_path(self) -> str:
         return resolve_active_log_path(self.explicit_log_path)
+
+    def _start_embedded_service(self) -> None:
+        """Start in-process memory reader (TrackerService) on Windows."""
+        if os.name != "nt":
+            return
+        with self._embedded_lock:
+            if self._embedded_service is not None and getattr(self._embedded_service, "running", False):
+                return
+            try:
+                from src.tracker.tracker_service import TrackerConfig, TrackerService
+
+                cfg = TrackerConfig(
+                    interval=0.2,
+                    output_path=None,
+                    reveal_opponent_hand=True,
+                    client_mode="auto",
+                )
+                self._embedded_service = TrackerService(
+                    config=cfg,
+                    on_snapshot=self._on_embedded_snapshot,
+                    on_error=lambda exc: logger.debug("Embedded tracker notice: %s", exc),
+                    on_status=lambda st: logger.debug("Embedded tracker status: %s", st),
+                )
+                self._embedded_service.start()
+                logger.info("Embedded in-process TrackerService successfully started")
+            except Exception as exc:
+                logger.warning("Failed to start embedded in-process TrackerService: %s", exc)
+
+    def _stop_embedded_service(self) -> None:
+        with self._embedded_lock:
+            if self._embedded_service is not None:
+                try:
+                    self._embedded_service.stop(timeout=1.5)
+                except Exception as exc:
+                    logger.debug("Error stopping embedded TrackerService: %s", exc)
+                self._embedded_service = None
+
+    def _on_embedded_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        if not isinstance(snapshot, dict):
+            return
+        now = time.time()
+        with self._lock:
+            self._latest_snapshot = snapshot
+            self._latest_timestamp = now
+            subscribers = list(self._subscribers)
+
+        for sub in subscribers:
+            try:
+                sub(snapshot)
+            except Exception as exc:
+                logger.warning("Subscriber error in TrackerBridge: %s", exc)
 
     def set_log_path(self, log_path: Optional[str]) -> None:
         """Dynamically update the tracked log file path."""
         with self._lock:
             self.explicit_log_path = log_path
+            if log_path in ("embedded", "auto", None, ""):
+                self._start_embedded_service()
             resolved = self._resolve_log_path()
             if self.log_path != resolved:
                 self.log_path = resolved
                 logger.info("TrackerBridge log path updated to: %s", self.log_path)
                 # 清除旧路径下的陈旧快照，防止切换到错误窗口或不存在的文件时残留上一局状态
-                self._latest_snapshot = None
-                self._latest_timestamp = 0.0
+                if log_path != "embedded":
+                    self._latest_snapshot = None
+                    self._latest_timestamp = 0.0
                 if os.path.isfile(resolved):
                     self._load_latest_on_start()
-            elif not os.path.isfile(resolved):
+            elif not os.path.isfile(resolved) and log_path != "embedded":
                 # 即使路径相同但文件不存在，也清空快照保证 is_fresh / is_available 返回 False
                 self._latest_snapshot = None
                 self._latest_timestamp = 0.0
 
     def start(self) -> None:
+        # 优先在后台启动内置直读服务
+        if self.explicit_log_path in (None, "", "auto", "embedded"):
+            self._start_embedded_service()
+
         if self._worker_thread is not None and self._worker_thread.is_alive():
             return
         self._stop_event.clear()
@@ -69,7 +129,7 @@ class TrackerBridge:
             daemon=True,
         )
         self._worker_thread.start()
-        logger.info("TrackerBridge started tailing %s", self.log_path)
+        logger.info("TrackerBridge started (embedded + tailing %s)", self.log_path)
 
     def _load_latest_on_start(self) -> None:
         try:
@@ -83,7 +143,7 @@ class TrackerBridge:
                                 break
             else:
                 with self._lock:
-                    if self.explicit_log_path not in (None, "", "auto"):
+                    if self.explicit_log_path not in (None, "", "auto", "embedded"):
                         self._latest_snapshot = None
                         self._latest_timestamp = 0.0
         except Exception as exc:
@@ -91,13 +151,19 @@ class TrackerBridge:
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._stop_embedded_service()
         if self._worker_thread is not None:
             self._worker_thread.join(timeout=2.0)
             self._worker_thread = None
         logger.info("TrackerBridge stopped")
 
     def is_running(self) -> bool:
-        return self._worker_thread is not None and self._worker_thread.is_alive()
+        tail_alive = self._worker_thread is not None and self._worker_thread.is_alive()
+        embedded_alive = (
+            self._embedded_service is not None
+            and getattr(self._embedded_service, "running", False)
+        )
+        return tail_alive or embedded_alive
 
     def refresh_from_file(self) -> Optional[Dict[str, Any]]:
         """直接从日志文件末尾读取最新快照，不依赖后台轮询延迟。"""

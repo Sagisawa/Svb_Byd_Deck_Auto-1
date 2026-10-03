@@ -112,6 +112,15 @@ for fname in config_files:
     if os.path.exists(fpath):
         datas.append((fpath, '.'))
 
+# 包含内嵌读内存记牌器数据和版本配置
+tracker_data_dir = os.path.join(project_root, 'src', 'tracker', 'data')
+if os.path.isdir(tracker_data_dir):
+    datas.append((tracker_data_dir, 'src/tracker/data'))
+
+tracker_vp_dir = os.path.join(project_root, 'src', 'tracker', 'version_profiles')
+if os.path.isdir(tracker_vp_dir):
+    datas.append((tracker_vp_dir, 'src/tracker/version_profiles'))
+
 # 排除的目录（这些是用户可自定义的配置文件，不打包进程序）
 excluded_dirs = [
     'quanka',
@@ -147,6 +156,15 @@ hiddenimports = [
     'src.ui.deck_qr',
     'src.utils.card_swap_strategy_enhanced',
     'src.config.card_priorities',
+    # 内嵌内存读取模块
+    'src.tracker.tracker_service',
+    'src.tracker.versioning',
+    'src.tracker.card_catalog',
+    'src.tracker.memory.battle',
+    'src.tracker.memory.deck',
+    'src.tracker.memory.discovery',
+    'src.tracker.memory.metadata',
+    'src.tracker.memory.win32',
 ]
 
 try:

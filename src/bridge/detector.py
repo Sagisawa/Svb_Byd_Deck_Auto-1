@@ -216,6 +216,16 @@ def get_all_candidate_lab_targets(
 
     running = find_running_lab_processes()
 
+    # 0. Embedded in-process direct memory reading option (Top recommendation)
+    targets.append(
+        LabTargetInfo(
+            label="★ [内置直读] 内部内存直接读取 (无需启动外部记牌器，零延迟)",
+            log_path="embedded",
+            is_running=True,
+            log_exists=True,
+        )
+    )
+
     # 1. Auto-detect option
     if running:
         first = running[0]
@@ -385,9 +395,10 @@ def resolve_active_log_path(explicit_path: Optional[str] = None) -> str:
     """Resolve the effective log path to tail.
 
     If explicit_path is provided and is a concrete file path, returns it.
+    If explicit_path is 'embedded', returns 'embedded'.
     If explicit_path is None or 'auto', prioritizes running processes, then existing files.
     """
-    if explicit_path and explicit_path != "auto":
+    if explicit_path and explicit_path not in ("auto", None):
         return explicit_path
 
     # Check running processes first

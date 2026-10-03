@@ -26,6 +26,7 @@ class CardNameResolver:
 
     def _find_default_csv(self) -> Optional[str]:
         candidates = [
+            os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")), "tracker", "data", "SV_WB_Cards.csv"),
             os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")), "quanka", "SV_WB_Cards", "SV_WB_Cards.csv"),
             r"D:\auto\Svb_Byd_Deck_Auto-main\quanka\SV_WB_Cards\SV_WB_Cards.csv",
             r"D:\auto\SephiesDeckLab-1.0.0\src\shadowverse_tracker\data\SV_WB_Cards.csv",

@@ -392,7 +392,7 @@ class DashboardPage(QWidget):
 
         self.recognition_mode_label = QLabel("识别方式")
         self.recognition_mode_combo = QComboBox()
-        self.recognition_mode_combo.addItem("使用SephiesDeckLab工具识别", "memory")
+        self.recognition_mode_combo.addItem("内存直读 / SephiesDeckLab", "memory")
         self.recognition_mode_combo.addItem("传统图色识别与OCR", "vision")
         self.recognition_mode_combo.setMinimumWidth(210)
 
@@ -886,7 +886,9 @@ class DashboardPage(QWidget):
                 self.lab_process_combo.setCurrentIndex(0)
                 return
 
-        if path not in ("auto", "__browse__"):
+        if path == "embedded":
+            tip = "【内置直读】内部直接读取游戏内存 (无需启动外部记牌器，零延迟)"
+        elif path not in ("auto", "__browse__"):
             if os.path.exists(path) and os.path.isfile(path):
                 tip = f"锁定日志: {path} (日志文件就绪)"
             else:
@@ -931,7 +933,9 @@ class DashboardPage(QWidget):
 
         self.lab_process_combo.setCurrentIndex(selected_idx)
         current_data = str(self.lab_process_combo.currentData() or "auto")
-        if current_data not in ("auto", "__browse__"):
+        if current_data == "embedded":
+            tip = "【内置直读】内部直接读取游戏内存 (无需启动外部记牌器，零延迟)"
+        elif current_data not in ("auto", "__browse__"):
             if os.path.exists(current_data) and os.path.isfile(current_data):
                 tip = f"锁定日志: {current_data} (日志文件就绪)"
             else:
