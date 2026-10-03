@@ -37,7 +37,7 @@ class SnapshotAdapter:
     @classmethod
     def _cards_have_snapshot_fields(cls, cards: Any) -> bool:
         """卡牌列表为空视为通过；非空时要求存在携带完整字段的卡牌对象。"""
-        if not isinstance(cards, list) or not cards:
+        if not isinstance(cards, (list, tuple)) or not cards:
             return True
         for card in cards:
             if isinstance(card, dict):
@@ -77,7 +77,7 @@ class SnapshotAdapter:
         if not snap or not isinstance(snap, dict):
             return False
         players = snap.get("root", {}).get("players")
-        if not isinstance(players, list) or len(players) == 0:
+        if not isinstance(players, (list, tuple)) or len(players) == 0:
             return False
         if not self._players_have_snapshot_fields(players):
             global _warned_incomplete_snapshot

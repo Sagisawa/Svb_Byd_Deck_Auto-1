@@ -123,7 +123,7 @@ def format_board_state(snapshot: Optional[Dict[str, Any]]) -> FormattedBoardStat
         return FormattedBoardState(is_in_match=False)
 
     players = snapshot.get("root", {}).get("players")
-    if not isinstance(players, list) or len(players) == 0:
+    if not isinstance(players, (list, tuple)) or len(players) == 0:
         return FormattedBoardState(is_in_match=False)
 
     mine = players[0] if isinstance(players[0], dict) else {}
@@ -258,8 +258,8 @@ def format_board_state(snapshot: Optional[Dict[str, Any]]) -> FormattedBoardStat
         enemy_hp=opponent.get("life"),
         enemy_max_hp=opponent.get("max_life", 20),
         enemy_class_name=enemy_class_name,
-        enemy_hand_count=len(enemy_hand) if isinstance(enemy_hand, list) else 0,
+        enemy_hand_count=len(enemy_hand) if isinstance(enemy_hand, (list, tuple)) else 0,
         our_followers=our_followers,
         enemy_followers=enemy_followers,
-        our_hand_count=len(our_hand) if isinstance(our_hand, list) else 0,
+        our_hand_count=len(our_hand) if isinstance(our_hand, (list, tuple)) else 0,
     )

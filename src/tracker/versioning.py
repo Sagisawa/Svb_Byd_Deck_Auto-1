@@ -92,7 +92,7 @@ def profile_cache_dir() -> Path:
 
 
 PROFILE_API_URL = (
-    "https://api.github.com/repos/MikazukiMisaki2/ShadowverseTracker/contents/"
+    "https://api.github.com/repos/DaydreamStarRiver/ShadowverseTracker/contents/"
     "src/shadowverse_tracker/version_profiles"
 )
 

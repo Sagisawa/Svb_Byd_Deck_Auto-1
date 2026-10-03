@@ -60,8 +60,8 @@ class TrackerBridge:
                 self._embedded_service = TrackerService(
                     config=cfg,
                     on_snapshot=self._on_embedded_snapshot,
-                    on_error=lambda exc: logger.debug("Embedded tracker notice: %s", exc),
-                    on_status=lambda st: logger.debug("Embedded tracker status: %s", st),
+                    on_error=lambda exc: logger.warning("【内存直读】: %s", exc),
+                    on_status=lambda st: logger.info("【内存直读】: %s", st),
                 )
                 self._embedded_service.start()
                 logger.info("Embedded in-process TrackerService successfully started")
@@ -118,6 +118,10 @@ class TrackerBridge:
         if self.explicit_log_path in (None, "", "auto", "embedded"):
             self._start_embedded_service()
 
+        if self.explicit_log_path == "embedded":
+            logger.info("TrackerBridge started (in-process embedded memory mode)")
+            return
+
         if self._worker_thread is not None and self._worker_thread.is_alive():
             return
         self._stop_event.clear()
@@ -132,6 +136,8 @@ class TrackerBridge:
         logger.info("TrackerBridge started (embedded + tailing %s)", self.log_path)
 
     def _load_latest_on_start(self) -> None:
+        if self.explicit_log_path == "embedded":
+            return
         try:
             target = self.log_path or self._resolve_log_path()
             if target and os.path.isfile(target) and os.path.getsize(target) > 0:
@@ -167,6 +173,11 @@ class TrackerBridge:
 
     def refresh_from_file(self) -> Optional[Dict[str, Any]]:
         """直接从日志文件末尾读取最新快照，不依赖后台轮询延迟。"""
+        if self.explicit_log_path == "embedded" or (
+            self._embedded_service is not None and getattr(self._embedded_service, "running", False)
+        ):
+            with self._lock:
+                return self._latest_snapshot
         try:
             target = self.log_path or self._resolve_log_path()
             if target and os.path.isfile(target) and os.path.getsize(target) > 0:
@@ -195,6 +206,9 @@ class TrackerBridge:
             self.refresh_from_file()
         with self._lock:
             return self._latest_snapshot
+
+    def get_latest_snapshot(self, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
+        return self.get_snapshot(force_refresh=force_refresh)
 
     def get_snapshot_age(self) -> float:
         with self._lock:
@@ -255,21 +269,27 @@ class TrackerBridge:
                         file_obj = None
                         current_tracked_path = ""
                         last_file_size = 0
+                    has_embedded = (
+                        self._embedded_service is not None
+                        and getattr(self._embedded_service, "running", False)
+                    )
                     if self.explicit_log_path in (None, "", "auto"):
                         resolved = self._resolve_log_path()
                         if resolved and os.path.isfile(resolved):
                             target_path = resolved
                             self.log_path = resolved
                         else:
-                            with self._lock:
-                                self._latest_snapshot = None
-                                self._latest_timestamp = 0.0
+                            if not has_embedded:
+                                with self._lock:
+                                    self._latest_snapshot = None
+                                    self._latest_timestamp = 0.0
                             time.sleep(self.poll_interval)
                             continue
                     else:
-                        with self._lock:
-                            self._latest_snapshot = None
-                            self._latest_timestamp = 0.0
+                        if not has_embedded:
+                            with self._lock:
+                                self._latest_snapshot = None
+                                self._latest_timestamp = 0.0
                         time.sleep(self.poll_interval)
                         continue
 
