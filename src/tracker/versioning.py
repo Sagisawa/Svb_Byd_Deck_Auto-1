@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import struct
 from urllib.request import Request, urlopen
 
 from .memory.win32 import ProcessReader
@@ -189,6 +190,130 @@ def _auto_compatible_profile(
     return None
 
 
+def _get_file_version(file_path: str | Path) -> str:
+    """读取 Windows 可执行文件的文件版本号 (如 1.9.11.19463)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        path_str = str(file_path)
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(path_str, None)
+        if not size:
+            return ""
+        res = ctypes.create_string_buffer(size)
+        if not ctypes.windll.version.GetFileVersionInfoW(path_str, 0, size, res):
+            return ""
+        u_len = wintypes.UINT()
+        l_ptr = ctypes.c_void_p()
+        if not ctypes.windll.version.VerQueryValueW(
+            res, r"\VarFileInfo\Translation", ctypes.byref(l_ptr), ctypes.byref(u_len)
+        ):
+            return ""
+        buf = ctypes.cast(l_ptr, ctypes.POINTER(ctypes.c_uint16))
+        sub_block = f"\\StringFileInfo\\{buf[0]:04x}{buf[1]:04x}\\FileVersion"
+        if ctypes.windll.version.VerQueryValueW(
+            res, sub_block, ctypes.byref(l_ptr), ctypes.byref(u_len)
+        ):
+            return ctypes.wstring_at(l_ptr.value)
+        sub_block = f"\\StringFileInfo\\{buf[0]:04x}{buf[1]:04x}\\ProductVersion"
+        if ctypes.windll.version.VerQueryValueW(
+            res, sub_block, ctypes.byref(l_ptr), ctypes.byref(u_len)
+        ):
+            return ctypes.wstring_at(l_ptr.value)
+    except Exception:
+        pass
+    return ""
+
+
+def _dynamically_extract_profile(
+    reader: ProcessReader,
+    module,
+    actual_hash: str,
+) -> VersionProfile | None:
+    """当所有静态配置均失效时，直接在运行中的游戏内存中动态提取 IL2CPP 类全局 RVA 并持久化配置."""
+    import logging
+
+    log = logging.getLogger(__name__)
+    try:
+        from .memory.discovery import find_il2cpp_classes
+
+        log.info(f"【内存直读】正在为未识别的 GameAssembly.dll ({actual_hash[:12]}) 动态分析特征码...")
+        module_data = reader.read(module.base_address, module.size)
+        rvas: dict[str, int] = {}
+        for field, expected_namespace, expected_name in _CLASS_IDENTITIES:
+            classes = find_il2cpp_classes(
+                reader, expected_name, expected_namespace, module_name=module.name
+            )
+            if not classes:
+                classes = find_il2cpp_classes(reader, expected_name, None, module_name=module.name)
+            if not classes:
+                log.warning(f"【内存直读】动态分析失败：未能在内存中定位到 {expected_name}")
+                return None
+
+            found_rvas: list[int] = []
+            for cls_addr in classes:
+                pattern = struct.pack("<Q", cls_addr)
+                idx = 0
+                while True:
+                    pos = module_data.find(pattern, idx)
+                    if pos < 0:
+                        break
+                    found_rvas.append(pos)
+                    idx = pos + 1
+            if not found_rvas:
+                log.warning(f"【内存直读】动态分析失败：未能在模块中定位到 {expected_name} 的全局槽位")
+                return None
+            rvas[field] = found_rvas[0]
+
+        game_version = f"auto-{actual_hash[:8]}"
+        unity_version = "2022.3.62f2"
+        try:
+            exe_path = reader.module("ShadowverseWB.exe").path
+            gv = _get_file_version(exe_path)
+            if gv:
+                game_version = gv
+        except Exception:
+            pass
+
+        try:
+            unity_path = reader.module("UnityPlayer.dll").path
+            uv = _get_file_version(unity_path)
+            if uv:
+                unity_version = uv
+        except Exception:
+            pass
+
+        profile_dict = {
+            "game_version": game_version,
+            "unity_version": unity_version,
+            "process_name": "ShadowverseWB.exe",
+            "module_name": module.name,
+            "gameassembly_sha256": actual_hash,
+            "battle_model_class_pointer_rva": f"0x{rvas['battle_model_class_pointer_rva']:X}",
+            "deck_info_class_pointer_rva": f"0x{rvas['deck_info_class_pointer_rva']:X}",
+            "practice_battle_model_class_pointer_rva": f"0x{rvas['practice_battle_model_class_pointer_rva']:X}",
+            "auto_compatible": True,
+        }
+
+        # 写入本地持久化目录
+        raw_json = json.dumps(profile_dict, indent=2, ensure_ascii=False)
+        cache = profile_cache_dir()
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / f"{game_version}.json").write_text(raw_json, encoding="utf-8")
+
+        local_dir = Path(__file__).resolve().parent / "version_profiles"
+        if local_dir.is_dir():
+            (local_dir / f"{game_version}.json").write_text(raw_json, encoding="utf-8")
+
+        log.info(
+            f"【内存直读】已成功动态识别新游戏版本 {game_version} 并自动保存特征码配置！"
+        )
+        return VersionProfile.from_dict(profile_dict)
+    except Exception as exc:
+        log.warning(f"【内存直读】动态分析过程发生异常: {exc}")
+        return None
+
+
 def verify_process_version(reader: ProcessReader) -> VersionProfile:
     profiles = load_profiles()
     module_names = {profile.module_name.casefold() for profile in profiles}
@@ -212,6 +337,10 @@ def verify_process_version(reader: ProcessReader) -> VersionProfile:
     compatible = _auto_compatible_profile(reader, module, profiles, actual_hash)
     if compatible is not None:
         return compatible
+    # 动态分析自愈机制：若已知配置文件未命中且远程未就绪，自动动态提取当前运行游戏的特征码
+    dynamic = _dynamically_extract_profile(reader, module, actual_hash)
+    if dynamic is not None:
+        return dynamic
     raise UnsupportedGameVersion(
         f"不支持当前 GameAssembly.dll（SHA-256: {actual_hash}）{update_error}"
     )
