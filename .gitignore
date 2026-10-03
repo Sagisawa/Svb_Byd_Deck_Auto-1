@@ -118,6 +118,7 @@ config.json
 *.bat
 !tools/desktop_avatar/build.bat
 tools/desktop_avatar/bin/
+tools/desktop_avatar/auto_launch_cache.json
 /.claude
 claude.md
 /debug*
