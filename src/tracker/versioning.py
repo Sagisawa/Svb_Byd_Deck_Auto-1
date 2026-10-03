@@ -346,12 +346,18 @@ def verify_process_version(reader: ProcessReader) -> VersionProfile:
     )
 
 
+KNOWN_GAME_PROCESS_NAMES = (
+    "ShadowverseWB.exe",
+    "MuMu模拟器x影之诗高清版.exe",
+)
+
+
 def check_game_profile_status() -> dict[str, object]:
     """检查当前运行中的游戏进程与特征码配置匹配状态."""
     from .memory.win32 import iter_processes
 
-    target_name = "shadowversewb.exe"
-    candidates = [p for p in iter_processes() if p.name.casefold() == target_name]
+    target_names = {name.casefold() for name in KNOWN_GAME_PROCESS_NAMES}
+    candidates = [p for p in iter_processes() if p.name.casefold() in target_names]
     if not candidates:
         return {
             "status": "not_running",
@@ -362,6 +368,7 @@ def check_game_profile_status() -> dict[str, object]:
         }
 
     pid = candidates[0].pid
+    proc_name = candidates[0].name
     try:
         reader = ProcessReader(pid)
         try:
@@ -388,7 +395,7 @@ def check_game_profile_status() -> dict[str, object]:
                 }
             gv = ""
             try:
-                gv = _get_file_version(reader.module("ShadowverseWB.exe").path)
+                gv = _get_file_version(reader.module(proc_name).path)
             except Exception:
                 pass
             return {
@@ -417,10 +424,10 @@ def extract_and_save_profile_for_process(
     from .memory.win32 import iter_processes
 
     if pid is None:
-        target_name = "shadowversewb.exe"
-        candidates = [p for p in iter_processes() if p.name.casefold() == target_name]
+        target_names = {name.casefold() for name in KNOWN_GAME_PROCESS_NAMES}
+        candidates = [p for p in iter_processes() if p.name.casefold() in target_names]
         if not candidates:
-            return False, "未找到运行中的游戏进程 (ShadowverseWB.exe)", None
+            return False, "未找到运行中的游戏进程 (ShadowverseWB.exe / MuMu模拟器x影之诗高清版.exe)", None
         pid = candidates[0].pid
 
     try:

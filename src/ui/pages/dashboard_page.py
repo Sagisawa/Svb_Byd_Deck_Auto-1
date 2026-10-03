@@ -397,7 +397,7 @@ class DashboardPage(QWidget):
 
         self.recognition_mode_label = QLabel("识别方式")
         self.recognition_mode_combo = QComboBox()
-        self.recognition_mode_combo.addItem("内存直读（内置推荐，零延迟免外部工具）", "memory")
+        self.recognition_mode_combo.addItem("内存直读（内置推荐，全面支持Steam国际服）", "memory")
         self.recognition_mode_combo.addItem("传统图色识别与OCR", "vision")
         self.recognition_mode_combo.setMinimumWidth(280)
 
@@ -419,7 +419,7 @@ class DashboardPage(QWidget):
 
         self.capture_method_combo.currentIndexChanged.connect(self._on_capture_method_changed)
         self.adb_input.textChanged.connect(self._refresh_control_states)
-        self.server_combo.currentTextChanged.connect(self._refresh_control_states)
+        self.server_combo.currentTextChanged.connect(self._on_server_changed)
         self.wgc_window_combo.currentIndexChanged.connect(self._refresh_control_states)
         self.recognition_mode_combo.currentIndexChanged.connect(self._on_recognition_mode_changed)
 
@@ -458,10 +458,15 @@ class DashboardPage(QWidget):
         self.recognition_mode_tip = QLabel("推荐直读：自动读取游戏内存，零延迟无外部依赖")
         self.recognition_mode_tip.setObjectName("SubtleText")
 
+        self.server_notice_tip = QLabel("⚠️ 提示：内存直读深度适配 Steam 国际服；国服仅支持 PC 高清桌面版（需自测），安卓模拟器请切换为传统图色识别")
+        self.server_notice_tip.setStyleSheet("color: #fab387; font-size: 11px;")
+        self.server_notice_tip.setVisible(False)
+
         mode_layout.addWidget(self.profile_status_badge)
         mode_layout.addWidget(self.extract_profile_button)
         mode_layout.addWidget(self.check_profile_button)
         mode_layout.addWidget(self.recognition_mode_tip)
+        mode_layout.addWidget(self.server_notice_tip)
         mode_layout.addStretch(1)
 
         device_form.addWidget(self.recognition_mode_label, 1, 0)
@@ -997,7 +1002,20 @@ class DashboardPage(QWidget):
         else:
             self.connect_button.setText("连接游戏")
 
+        self._sync_server_notice()
         self._refresh_control_states()
+
+    def _on_server_changed(self) -> None:
+        self._sync_server_notice()
+        self._refresh_control_states()
+
+    def _sync_server_notice(self) -> None:
+        if not hasattr(self, "server_notice_tip"):
+            return
+        is_cn = str(self.server_combo.currentText()).strip() == "国服"
+        is_memory = str(self.recognition_mode_combo.currentData() or "memory") == "memory"
+        is_adb = str(self.capture_method_combo.currentData() or "wgc") == "adb"
+        self.server_notice_tip.setVisible(is_cn and is_memory and not is_adb)
 
     def _on_recognition_mode_changed(self) -> None:
         is_adb = str(self.capture_method_combo.currentData() or "wgc") == "adb"
@@ -1015,6 +1033,7 @@ class DashboardPage(QWidget):
             else:
                 self.recognition_mode_tip.setVisible(not is_adb)
                 self.recognition_mode_tip.setText("传统模式：仅使用 OpenCV 图像匹配与 OCR 截屏识别画面")
+        self._sync_server_notice()
         if show_memory_tools:
             self.check_and_update_profile_status()
         self._refresh_control_states()
