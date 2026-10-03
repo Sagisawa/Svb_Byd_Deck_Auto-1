@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import QRectF, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPen
@@ -246,6 +246,7 @@ class DashboardPage(QWidget):
     navigate_requested = pyqtSignal(str)
     disclaimer_requested = pyqtSignal()
     avatar_requested = pyqtSignal()
+    snapshot_received = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -253,8 +254,11 @@ class DashboardPage(QWidget):
         self._device_connected = False
         self._responsive_mode = ""
         self._banner_compact = None
+        self._subscribed_bridge = False
         self._build_ui()
         self.set_run_status("disconnected")
+        self.snapshot_received.connect(self._on_snapshot_received)
+        self._init_battle_panel_subscription()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -541,6 +545,101 @@ class DashboardPage(QWidget):
         deck.addWidget(curve_label)
         self.cost_curve = CostCurveWidget()
         deck.addWidget(self.cost_curve)
+
+        self.battle_panel = QFrame()
+        self.battle_panel.setObjectName("DashboardPanel")
+        battle_layout = QVBoxLayout(self.battle_panel)
+        battle_layout.setContentsMargins(18, 16, 18, 16)
+        battle_layout.setSpacing(10)
+
+        battle_header = QHBoxLayout()
+        battle_header.addWidget(self._section_title("战场态势与随从状态"))
+        self.battle_status_badge = QLabel("○ 待机中")
+        self.battle_status_badge.setObjectName("SubtleText")
+        battle_header.addWidget(self.battle_status_badge)
+        battle_header.addStretch(1)
+        self.refresh_battle_button = QPushButton("刷新状态")
+        self.refresh_battle_button.setObjectName("SecondaryButton")
+        self.refresh_battle_button.setFixedHeight(24)
+        self.refresh_battle_button.setToolTip("手动从内存/记牌器拉取最新战场快照并刷新显示")
+        self.refresh_battle_button.clicked.connect(self._manual_refresh_battle_state)
+        battle_header.addWidget(self.refresh_battle_button)
+        battle_layout.addLayout(battle_header)
+
+        summary_box = QFrame()
+        summary_box.setObjectName("BattleSummaryBox")
+        summary_box.setStyleSheet(
+            "QFrame#BattleSummaryBox {"
+            "  background-color: #212130;"
+            "  border: 1px solid #353648;"
+            "  border-radius: 6px;"
+            "}"
+        )
+        summary_layout = QHBoxLayout(summary_box)
+        summary_layout.setContentsMargins(10, 6, 10, 6)
+        summary_layout.setSpacing(14)
+        self.battle_our_summary = QLabel("我方: 等待进入对战...")
+        self.battle_our_summary.setTextFormat(Qt.RichText)
+        self.battle_enemy_summary = QLabel("敌方: 等待进入对战...")
+        self.battle_enemy_summary.setTextFormat(Qt.RichText)
+        summary_layout.addWidget(self.battle_our_summary, 1)
+        summary_layout.addWidget(self.battle_enemy_summary, 1)
+        battle_layout.addWidget(summary_box)
+
+        field_layout = QHBoxLayout()
+        field_layout.setSpacing(12)
+
+        our_field_box = QVBoxLayout()
+        our_field_box.setSpacing(5)
+        self.our_field_header = QLabel("我方场上随从/护符 (0/5)")
+        self.our_field_header.setStyleSheet("color: #a6e3a1; font-weight: 600; font-size: 12px;")
+        our_field_box.addWidget(self.our_field_header)
+
+        self.our_field_text = QTextEdit()
+        self.our_field_text.setObjectName("OurFieldText")
+        self.our_field_text.setReadOnly(True)
+        self.our_field_text.setMinimumHeight(130)
+        self.our_field_text.setStyleSheet(
+            "QTextEdit#OurFieldText {"
+            "  background-color: #1e1e2e;"
+            "  border: 1px solid #363a4f;"
+            "  border-radius: 6px;"
+            "  padding: 6px;"
+            "  color: #cdd6f4;"
+            "  font-family: 'Microsoft YaHei UI', 'Segoe UI', monospace;"
+            "  font-size: 12px;"
+            "}"
+        )
+        our_field_box.addWidget(self.our_field_text)
+        field_layout.addLayout(our_field_box, 1)
+
+        enemy_field_box = QVBoxLayout()
+        enemy_field_box.setSpacing(5)
+        self.enemy_field_header = QLabel("对手场上随从/护符 (0/5 · 从左到右)")
+        self.enemy_field_header.setStyleSheet("color: #f38ba8; font-weight: 600; font-size: 12px;")
+        enemy_field_box.addWidget(self.enemy_field_header)
+
+        self.enemy_field_text = QTextEdit()
+        self.enemy_field_text.setObjectName("EnemyFieldText")
+        self.enemy_field_text.setReadOnly(True)
+        self.enemy_field_text.setMinimumHeight(130)
+        self.enemy_field_text.setStyleSheet(
+            "QTextEdit#EnemyFieldText {"
+            "  background-color: #1e1e2e;"
+            "  border: 1px solid #363a4f;"
+            "  border-radius: 6px;"
+            "  padding: 6px;"
+            "  color: #cdd6f4;"
+            "  font-family: 'Microsoft YaHei UI', 'Segoe UI', monospace;"
+            "  font-size: 12px;"
+            "}"
+        )
+        enemy_field_box.addWidget(self.enemy_field_text)
+        field_layout.addLayout(enemy_field_box, 1)
+
+        battle_layout.addLayout(field_layout)
+        self._reset_battle_ui()
+
         self.content_layout.addLayout(self.body, 1)
 
         notice = QFrame()
@@ -578,24 +677,30 @@ class DashboardPage(QWidget):
             if mode == "wide":
                 self.body.addWidget(self.control_panel, 0, 0)
                 self.body.addWidget(self.run_panel, 0, 1)
-                self.body.addWidget(self.log_panel, 1, 0)
+                self.body.addWidget(self.battle_panel, 1, 0)
                 self.body.addWidget(self.deck_panel, 1, 1, Qt.AlignTop)
+                self.body.addWidget(self.log_panel, 2, 0, 1, 2)
                 self.body.setColumnStretch(0, 7)
                 self.body.setColumnStretch(1, 5)
                 self.body.setRowStretch(0, 0)
-                self.body.setRowStretch(1, 1)
-                self.log_output.setMinimumHeight(220)
+                self.body.setRowStretch(1, 0)
+                self.body.setRowStretch(2, 1)
+                self.log_output.setMinimumHeight(180)
                 self.content_layout.setContentsMargins(24, 22, 24, 20)
             else:
                 self.body.addWidget(self.control_panel, 0, 0)
                 self.body.addWidget(self.run_panel, 1, 0)
-                self.body.addWidget(self.deck_panel, 2, 0)
-                self.body.addWidget(self.log_panel, 3, 0)
+                self.body.addWidget(self.battle_panel, 2, 0)
+                self.body.addWidget(self.deck_panel, 3, 0)
+                self.body.addWidget(self.log_panel, 4, 0)
                 self.body.setColumnStretch(0, 1)
                 self.body.setColumnStretch(1, 0)
                 self.body.setRowStretch(0, 0)
                 self.body.setRowStretch(1, 0)
-                self.log_output.setMinimumHeight(280)
+                self.body.setRowStretch(2, 0)
+                self.body.setRowStretch(3, 0)
+                self.body.setRowStretch(4, 1)
+                self.log_output.setMinimumHeight(240)
                 self.content_layout.setContentsMargins(16, 16, 16, 16)
             self.body.invalidate()
             self.content_layout.invalidate()
@@ -1060,3 +1165,184 @@ class DashboardPage(QWidget):
         self.log_output.append(str(message or ""))
         scrollbar = self.log_output.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def _init_battle_panel_subscription(self) -> None:
+        if getattr(self, "_subscribed_bridge", False):
+            return
+        try:
+            from src.bridge import get_global_tracker_bridge
+
+            bridge = get_global_tracker_bridge()
+            bridge.subscribe(self._on_bridge_snapshot_thread)
+            self._subscribed_bridge = True
+            latest = bridge.get_latest_snapshot()
+            if latest:
+                self.snapshot_received.emit(latest)
+        except Exception:
+            pass
+
+    def _on_bridge_snapshot_thread(self, snapshot: Dict[str, Any]) -> None:
+        try:
+            self.snapshot_received.emit(snapshot or {})
+        except Exception:
+            pass
+
+    def _on_snapshot_received(self, snapshot: Dict[str, Any]) -> None:
+        try:
+            from src.bridge.board_formatter import format_board_state
+
+            board_state = format_board_state(snapshot)
+            self.update_board_state(board_state)
+        except Exception:
+            pass
+
+    def update_board_state(self, board: Any) -> None:
+        if not board or not getattr(board, "is_in_match", False):
+            self._reset_battle_ui()
+            return
+
+        # 状态标头
+        if getattr(board, "is_mulligan", False):
+            self.battle_status_badge.setText("● 初始换牌中")
+            self.battle_status_badge.setStyleSheet("color: #f9e2af; font-weight: bold; font-size: 13px;")
+        else:
+            turn = getattr(board, "turn", None)
+            turn_str = f"第 {turn} 回合" if turn is not None else "对局中"
+            self.battle_status_badge.setText(f"● 对战中 · {turn_str}")
+            self.battle_status_badge.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 13px;")
+
+        # 我方指标
+        our_hp = board.our_hp if board.our_hp is not None else "?"
+        our_max_hp = board.our_max_hp if board.our_max_hp is not None else 20
+        our_pp = board.our_pp if board.our_pp is not None else "?"
+        our_max_pp = board.our_max_pp if board.our_max_pp is not None else "?"
+        our_ep = board.our_ep if board.our_ep is not None else 0
+        our_sep = board.our_sep if board.our_sep is not None else 0
+        self.battle_our_summary.setText(
+            f"<b style='color: #a6e3a1;'>我方:</b> "
+            f"生命 <b style='color: #f38ba8;'>{our_hp}</b>/{our_max_hp}  |  "
+            f"PP <b style='color: #89b4fa;'>{our_pp}</b>/{our_max_pp}  |  "
+            f"EP <b style='color: #fab387;'>{our_ep}</b>(超进:{our_sep})  |  "
+            f"手牌 <b style='color: #cdd6f4;'>{board.our_hand_count}</b>"
+        )
+
+        # 敌方指标
+        enemy_hp = board.enemy_hp if board.enemy_hp is not None else "?"
+        enemy_max_hp = board.enemy_max_hp if board.enemy_max_hp is not None else 20
+        self.battle_enemy_summary.setText(
+            f"<b style='color: #f38ba8;'>敌方 ({board.enemy_class_name}):</b> "
+            f"生命 <b style='color: #f38ba8;'>{enemy_hp}</b>/{enemy_max_hp}  |  "
+            f"手牌 <b style='color: #cdd6f4;'>{board.enemy_hand_count}</b>"
+        )
+
+        # 我方场面
+        our_units = getattr(board, "our_followers", []) or []
+        self.our_field_header.setText(f"我方场上随从/护符 ({len(our_units)}/5)")
+        if our_units:
+            html_parts = [self._format_unit_html(u) for u in our_units]
+            self.our_field_text.setHtml("".join(html_parts))
+        else:
+            self.our_field_text.setHtml("<div style='color: #6c7086; padding: 6px;'>场上暂无随从或护符</div>")
+
+        # 对手场面 (从左到右)
+        enemy_units = getattr(board, "enemy_followers", []) or []
+        self.enemy_field_header.setText(f"对手场上随从/护符 ({len(enemy_units)}/5 · 从左到右)")
+        if enemy_units:
+            html_parts = [self._format_unit_html(u) for u in enemy_units]
+            self.enemy_field_text.setHtml("".join(html_parts))
+        else:
+            self.enemy_field_text.setHtml("<div style='color: #6c7086; padding: 6px;'>对手场上暂无随从或护符</div>")
+
+    def _reset_battle_ui(self) -> None:
+        self.battle_status_badge.setText("○ 待机中")
+        self.battle_status_badge.setStyleSheet("color: #9399b2; font-size: 13px;")
+        self.battle_our_summary.setText("<span style='color: #6c7086;'>我方: 等待进入对战...</span>")
+        self.battle_enemy_summary.setText("<span style='color: #6c7086;'>敌方: 等待进入对战...</span>")
+        self.our_field_header.setText("我方场上随从/护符 (0/5)")
+        self.enemy_field_header.setText("对手场上随从/护符 (0/5 · 从左到右)")
+        self.our_field_text.setHtml("<div style='color: #6c7086; padding: 6px;'>等待对局开始或记牌器连接...</div>")
+        self.enemy_field_text.setHtml("<div style='color: #6c7086; padding: 6px;'>等待对局开始或记牌器连接...</div>")
+
+    def _manual_refresh_battle_state(self) -> None:
+        try:
+            from src.bridge import get_global_tracker_bridge
+
+            bridge = get_global_tracker_bridge()
+            bridge.start()
+            snap = bridge.get_latest_snapshot()
+            if snap:
+                self._on_snapshot_received(snap)
+            else:
+                self._reset_battle_ui()
+        except Exception:
+            self._reset_battle_ui()
+
+    @staticmethod
+    def _format_unit_html(unit: Any) -> str:
+        color_idx = "#f38ba8" if getattr(unit, "is_opponent", False) else "#89b4fa"
+        idx = getattr(unit, "index", 1)
+        idx_label = f"敌{idx}" if getattr(unit, "is_opponent", False) else f"{idx}"
+        prefix = f"<span style='color: {color_idx}; font-weight: bold;'>[{idx_label}]</span>"
+
+        cost = getattr(unit, "cost", None)
+        cost_str = (
+            f"<span style='color: #f9e2af; font-weight: bold;'>{cost}费</span>"
+            if cost is not None
+            else ""
+        )
+        name = getattr(unit, "name", "未知卡牌")
+        name_str = f"<span style='color: #cdd6f4; font-weight: 600;'>{name}</span>"
+
+        is_amulet = getattr(unit, "is_amulet", False)
+        if is_amulet:
+            cd = getattr(unit, "countdown", None)
+            cd_info = f"倒数={cd}" if cd is not None and cd >= 0 else "护符"
+            stat_str = f"<span style='color: #b4befe; font-weight: 500;'>[{cd_info}]</span>"
+        else:
+            atk = getattr(unit, "attack", None)
+            hp = getattr(unit, "life", None)
+            atk_str = str(atk) if atk is not None else "?"
+            hp_str = str(hp) if hp is not None else "?"
+            if getattr(unit, "evolve_state", 0):
+                stat_str = (
+                    f"<span style='color: #f38ba8; font-weight: bold;'>{atk_str}/{hp_str}</span> "
+                    f"<span style='color: #fab387; font-size: 11px;'>[进化]</span>"
+                )
+            else:
+                stat_str = f"<span style='color: #a6e3a1; font-weight: bold;'>{atk_str}/{hp_str}</span>"
+
+        badges = []
+        kw_styles = {
+            "疾驰": "background-color: #274934; color: #a6e3a1;",
+            "突进": "background-color: #4a3e20; color: #f9e2af;",
+            "守护": "background-color: #203c4a; color: #89dceb;",
+            "必杀": "background-color: #48232c; color: #f38ba8;",
+            "谢幕曲": "background-color: #3b2842; color: #cba6f7;",
+            "潜行": "background-color: #313244; color: #bac2de;",
+            "无法被攻击": "background-color: #313244; color: #bac2de;",
+            "无法被选中为目标": "background-color: #313244; color: #bac2de;",
+            "虹吸": "background-color: #45293b; color: #f5c2e7;",
+            "无法攻击": "background-color: #313244; color: #6c7086;",
+        }
+        for kw in (getattr(unit, "keywords", []) or []):
+            style = kw_styles.get(kw, "background-color: #313244; color: #cdd6f4;")
+            badges.append(
+                f"<span style='{style} padding: 1px 4px; border-radius: 3px; font-size: 11px;'>{kw}</span>"
+            )
+
+        action_perm = ""
+        if not getattr(unit, "is_opponent", False) and not is_amulet:
+            if getattr(unit, "can_attack_leader", False):
+                action_perm = "<span style='color: #a6e3a1; font-size: 11px; font-weight: 600;'>[可打脸]</span>"
+            elif getattr(unit, "can_attack_field", False):
+                action_perm = "<span style='color: #f9e2af; font-size: 11px; font-weight: 600;'>[可解场]</span>"
+            elif getattr(unit, "has_attacked", False):
+                action_perm = "<span style='color: #6c7086; font-size: 11px;'>[已攻击]</span>"
+
+        badges_str = " ".join(badges)
+        extras = " ".join(filter(bool, [stat_str, badges_str, action_perm]))
+        return (
+            f"<div style='margin-bottom: 5px; line-height: 1.4;'>"
+            f"{prefix} {cost_str} {name_str} {extras}"
+            f"</div>"
+        )

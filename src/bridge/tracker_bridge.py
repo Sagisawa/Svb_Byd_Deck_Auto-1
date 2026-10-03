@@ -210,6 +210,12 @@ class TrackerBridge:
         with self._lock:
             self._latest_snapshot = None
             self._latest_timestamp = 0.0
+            subscribers = list(self._subscribers)
+        for sub in subscribers:
+            try:
+                sub({})
+            except Exception:
+                pass
 
     def subscribe(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         with self._lock:
