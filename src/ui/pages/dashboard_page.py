@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-from PyQt5.QtCore import QRectF, Qt, pyqtSignal
+from PyQt5.QtCore import QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPen
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -434,8 +435,32 @@ class DashboardPage(QWidget):
         mode_layout.setContentsMargins(0, 0, 0, 0)
         mode_layout.setSpacing(10)
         mode_layout.addWidget(self.recognition_mode_combo)
+
+        # 内存特征码状态徽标与一键提取按钮
+        self.profile_status_badge = QLabel("○ 检查特征码中...")
+        self.profile_status_badge.setObjectName("ProfileStatusBadge")
+        self.profile_status_badge.setFixedHeight(28)
+        self._update_profile_badge_style("checking", "○ 检查特征码中...")
+
+        self.extract_profile_button = QPushButton("一键提取特征码")
+        self.extract_profile_button.setObjectName("SecondaryButton")
+        self.extract_profile_button.setFixedHeight(28)
+        self.extract_profile_button.setToolTip("从当前运行的游戏中动态提取 IL2CPP 特征码并更新本地配置")
+        self.extract_profile_button.clicked.connect(self._on_extract_profile_clicked)
+
+        self.check_profile_button = QPushButton("检测")
+        self.check_profile_button.setObjectName("SecondaryButton")
+        self.check_profile_button.setFixedHeight(28)
+        self.check_profile_button.setFixedWidth(54)
+        self.check_profile_button.setToolTip("重新检测游戏进程与特征码匹配状态")
+        self.check_profile_button.clicked.connect(self.check_and_update_profile_status)
+
         self.recognition_mode_tip = QLabel("推荐直读：自动读取游戏内存，零延迟无外部依赖")
         self.recognition_mode_tip.setObjectName("SubtleText")
+
+        mode_layout.addWidget(self.profile_status_badge)
+        mode_layout.addWidget(self.extract_profile_button)
+        mode_layout.addWidget(self.check_profile_button)
         mode_layout.addWidget(self.recognition_mode_tip)
         mode_layout.addStretch(1)
 
@@ -455,6 +480,11 @@ class DashboardPage(QWidget):
         control.addLayout(device_form)
         self.populate_wgc_windows()
         self._on_capture_method_changed()
+        self._profile_check_timer = QTimer(self)
+        self._profile_check_timer.setInterval(10000)
+        self._profile_check_timer.timeout.connect(self._on_profile_check_timer)
+        self._profile_check_timer.start()
+        QTimer.singleShot(600, self.check_and_update_profile_status)
         self.log_panel = QFrame()
         self.log_panel.setObjectName("DashboardPanel")
         log_layout = QVBoxLayout(self.log_panel)
@@ -920,6 +950,11 @@ class DashboardPage(QWidget):
         ):
             control.setEnabled(settings_enabled)
 
+        if hasattr(self, "extract_profile_button") and hasattr(self, "check_profile_button"):
+            extract_enabled = settings_enabled and not getattr(self, "_extracting_profile", False)
+            self.extract_profile_button.setEnabled(extract_enabled)
+            self.check_profile_button.setEnabled(extract_enabled)
+
     def _on_capture_method_changed(self) -> None:
         is_adb = str(self.capture_method_combo.currentData() or "wgc") == "adb"
 
@@ -930,8 +965,20 @@ class DashboardPage(QWidget):
         # WGC 原生控件
         self.recognition_mode_label.setVisible(not is_adb)
         self.recognition_mode_combo.setVisible(not is_adb)
+        is_memory = str(self.recognition_mode_combo.currentData() or "memory") == "memory"
+        show_memory_tools = is_memory and not is_adb
+        if hasattr(self, "profile_status_badge"):
+            self.profile_status_badge.setVisible(show_memory_tools)
+        if hasattr(self, "extract_profile_button"):
+            self.extract_profile_button.setVisible(show_memory_tools)
+        if hasattr(self, "check_profile_button"):
+            self.check_profile_button.setVisible(show_memory_tools)
         if hasattr(self, "recognition_mode_tip"):
-            self.recognition_mode_tip.setVisible(not is_adb)
+            if is_memory:
+                self.recognition_mode_tip.setVisible(False)
+            else:
+                self.recognition_mode_tip.setVisible(not is_adb)
+                self.recognition_mode_tip.setText("传统模式：仅使用 OpenCV 图像匹配与 OCR 截屏识别画面")
 
         self.wgc_window_label.setVisible(not is_adb)
         self.wgc_window_combo.setVisible(not is_adb)
@@ -953,7 +1000,213 @@ class DashboardPage(QWidget):
         self._refresh_control_states()
 
     def _on_recognition_mode_changed(self) -> None:
+        is_adb = str(self.capture_method_combo.currentData() or "wgc") == "adb"
+        is_memory = str(self.recognition_mode_combo.currentData() or "memory") == "memory"
+        show_memory_tools = is_memory and not is_adb
+        if hasattr(self, "profile_status_badge"):
+            self.profile_status_badge.setVisible(show_memory_tools)
+        if hasattr(self, "extract_profile_button"):
+            self.extract_profile_button.setVisible(show_memory_tools)
+        if hasattr(self, "check_profile_button"):
+            self.check_profile_button.setVisible(show_memory_tools)
+        if hasattr(self, "recognition_mode_tip"):
+            if is_memory:
+                self.recognition_mode_tip.setVisible(False)
+            else:
+                self.recognition_mode_tip.setVisible(not is_adb)
+                self.recognition_mode_tip.setText("传统模式：仅使用 OpenCV 图像匹配与 OCR 截屏识别画面")
+        if show_memory_tools:
+            self.check_and_update_profile_status()
         self._refresh_control_states()
+
+    def _update_profile_badge_style(self, status: str, text: str, tooltip: str = "") -> None:
+        if not hasattr(self, "profile_status_badge"):
+            return
+        self.profile_status_badge.setText(text)
+        self.profile_status_badge.setToolTip(tooltip)
+        if status == "matched":
+            self.profile_status_badge.setStyleSheet(
+                "QLabel#ProfileStatusBadge {"
+                "  color: #a6e3a1;"
+                "  background-color: #1a2e22;"
+                "  border: 1px solid #285438;"
+                "  border-radius: 4px;"
+                "  padding: 2px 10px;"
+                "  font-size: 12px;"
+                "  font-weight: 500;"
+                "}"
+            )
+        elif status == "mismatch":
+            self.profile_status_badge.setStyleSheet(
+                "QLabel#ProfileStatusBadge {"
+                "  color: #fab387;"
+                "  background-color: #33231a;"
+                "  border: 1px solid #5a3820;"
+                "  border-radius: 4px;"
+                "  padding: 2px 10px;"
+                "  font-size: 12px;"
+                "  font-weight: 600;"
+                "}"
+            )
+        elif status == "extracting":
+            self.profile_status_badge.setStyleSheet(
+                "QLabel#ProfileStatusBadge {"
+                "  color: #89b4fa;"
+                "  background-color: #1e2638;"
+                "  border: 1px solid #2e3e58;"
+                "  border-radius: 4px;"
+                "  padding: 2px 10px;"
+                "  font-size: 12px;"
+                "  font-weight: 500;"
+                "}"
+            )
+        else:
+            self.profile_status_badge.setStyleSheet(
+                "QLabel#ProfileStatusBadge {"
+                "  color: #9399b2;"
+                "  background-color: #1e1e2e;"
+                "  border: 1px solid #313244;"
+                "  border-radius: 4px;"
+                "  padding: 2px 10px;"
+                "  font-size: 12px;"
+                "}"
+            )
+
+    def _on_profile_check_timer(self) -> None:
+        if not self.isVisible():
+            return
+        is_memory = str(self.recognition_mode_combo.currentData() or "memory") == "memory"
+        is_adb = str(self.capture_method_combo.currentData() or "wgc") == "adb"
+        if is_memory and not is_adb and not getattr(self, "_extracting_profile", False):
+            self.check_and_update_profile_status()
+
+    def check_and_update_profile_status(self) -> None:
+        """检测当前运行中的游戏与特征码匹配状态，并更新 UI"""
+        if getattr(self, "_extracting_profile", False):
+            return
+        try:
+            from src.tracker.versioning import check_game_profile_status
+
+            res = check_game_profile_status()
+            status = res.get("status")
+            msg = res.get("message", "")
+            if status == "matched":
+                gv = res.get("game_version")
+                self._update_profile_badge_style(
+                    "matched",
+                    f"● 特征码匹配 ({gv})",
+                    f"当前游戏版本: {gv}\n特征码完整匹配，内存直读已准备就绪。",
+                )
+                if hasattr(self, "extract_profile_button"):
+                    self.extract_profile_button.setText("重新提取特征码")
+                    self.extract_profile_button.setStyleSheet("")
+            elif status == "mismatch":
+                gv = res.get("game_version") or "新版本"
+                self._update_profile_badge_style(
+                    "mismatch",
+                    f"▲ 特征码未适配 ({gv})",
+                    f"当前游戏版本: {gv}\n特征码未适配，请点击右侧“一键提取特征码”。",
+                )
+                if hasattr(self, "extract_profile_button"):
+                    self.extract_profile_button.setText("★ 一键提取特征码")
+                    self.extract_profile_button.setStyleSheet(
+                        "QPushButton {"
+                        "  background-color: #d97706;"
+                        "  color: #ffffff;"
+                        "  font-weight: bold;"
+                        "  border-radius: 4px;"
+                        "  padding: 3px 12px;"
+                        "}"
+                        "QPushButton:hover { background-color: #b45309; }"
+                    )
+            elif status == "not_running":
+                self._update_profile_badge_style(
+                    "not_running",
+                    "○ 游戏未运行",
+                    "未检测到运行中的 Shadowverse 游戏进程。",
+                )
+                if hasattr(self, "extract_profile_button"):
+                    self.extract_profile_button.setText("一键提取特征码")
+                    self.extract_profile_button.setStyleSheet("")
+            else:
+                self._update_profile_badge_style(
+                    "not_running",
+                    str(msg or "○ 状态未就绪"),
+                    str(msg or ""),
+                )
+                if hasattr(self, "extract_profile_button"):
+                    self.extract_profile_button.setText("一键提取特征码")
+                    self.extract_profile_button.setStyleSheet("")
+        except Exception as e:
+            self._update_profile_badge_style("not_running", "○ 检测失败", str(e))
+
+    def _on_extract_profile_clicked(self) -> None:
+        """点击一键提取特征码"""
+        try:
+            from src.tracker.versioning import check_game_profile_status
+
+            status_info = check_game_profile_status()
+            if status_info.get("status") == "not_running":
+                QMessageBox.information(
+                    self,
+                    "提示",
+                    "未检测到正在运行的 Shadowverse 游戏进程！\n\n请先启动游戏并进入游戏界面后，再点击“一键提取特征码”。",
+                )
+                return
+
+            pid = status_info.get("pid")
+            self._extracting_profile = True
+            self.extract_profile_button.setEnabled(False)
+            self.check_profile_button.setEnabled(False)
+            self.extract_profile_button.setText("⏳ 正在扫描提取中(约7秒)...")
+            self._update_profile_badge_style(
+                "extracting",
+                "⏳ 正在动态分析内存特征码...",
+                "正在扫描 GameAssembly 内存镜像，请勿关闭游戏...",
+            )
+            self.append_log("【特征码】正在为游戏进程动态分析提取 IL2CPP 特征码(约需7秒)...")
+
+            from src.ui.workers.profile_worker import ProfileExtractionWorker
+
+            self._profile_worker = ProfileExtractionWorker(pid=pid, parent=self)
+            self._profile_worker.finished_signal.connect(
+                self._on_profile_extraction_finished
+            )
+            self._profile_worker.start()
+        except Exception as exc:
+            self._extracting_profile = False
+            QMessageBox.warning(self, "错误", f"启动提取线程失败: {exc}")
+            self.extract_profile_button.setEnabled(True)
+            self.check_profile_button.setEnabled(True)
+            self.check_and_update_profile_status()
+
+    def _on_profile_extraction_finished(
+        self, success: bool, message: str, data: dict
+    ) -> None:
+        self._extracting_profile = False
+        self.extract_profile_button.setEnabled(True)
+        self.check_profile_button.setEnabled(True)
+        if success:
+            gv = data.get("game_version") or "最新版本"
+            self.check_and_update_profile_status()
+            self.append_log(f"【特征码】成功提取并更新游戏特征码配置 (版本: {gv})！")
+            QMessageBox.information(
+                self,
+                "提取成功",
+                f"恭喜！游戏版本特征码已成功提取并自动更新！\n\n"
+                f"游戏版本: {gv}\n"
+                f"配置文件已写入 version_profiles/{gv}.json\n"
+                f"当前内存直读已完全就绪，无需重启即可正常使用。",
+            )
+        else:
+            self.check_and_update_profile_status()
+            self.append_log(f"【特征码】提取未完成: {message}")
+            QMessageBox.warning(
+                self,
+                "提取失败",
+                f"特征码提取未完成：\n{message}\n\n"
+                "请确认游戏已经完全进入画面并正常显示，然后再试一次。",
+            )
 
     def set_elapsed(self, seconds: int) -> None:
         self.runtime_metric.set_value(format_duration(seconds), "本次运行")

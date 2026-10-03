@@ -344,3 +344,114 @@ def verify_process_version(reader: ProcessReader) -> VersionProfile:
     raise UnsupportedGameVersion(
         f"不支持当前 GameAssembly.dll（SHA-256: {actual_hash}）{update_error}"
     )
+
+
+def check_game_profile_status() -> dict[str, object]:
+    """检查当前运行中的游戏进程与特征码配置匹配状态."""
+    from .memory.win32 import iter_processes
+
+    target_name = "shadowversewb.exe"
+    candidates = [p for p in iter_processes() if p.name.casefold() == target_name]
+    if not candidates:
+        return {
+            "status": "not_running",
+            "pid": None,
+            "game_version": "",
+            "sha256": "",
+            "message": "○ 游戏未运行",
+        }
+
+    pid = candidates[0].pid
+    try:
+        reader = ProcessReader(pid)
+        try:
+            module = reader.module("GameAssembly.dll")
+            actual_hash = sha256_file(module.path)
+            profiles = load_profiles()
+            for profile in profiles:
+                if profile.gameassembly_sha256 == actual_hash:
+                    return {
+                        "status": "matched",
+                        "pid": pid,
+                        "game_version": profile.game_version,
+                        "sha256": actual_hash,
+                        "message": f"● 特征码匹配 ({profile.game_version})",
+                    }
+            compatible = _auto_compatible_profile(reader, module, profiles, actual_hash)
+            if compatible is not None:
+                return {
+                    "status": "matched",
+                    "pid": pid,
+                    "game_version": compatible.game_version,
+                    "sha256": actual_hash,
+                    "message": f"● 特征码兼容 ({compatible.game_version})",
+                }
+            gv = ""
+            try:
+                gv = _get_file_version(reader.module("ShadowverseWB.exe").path)
+            except Exception:
+                pass
+            return {
+                "status": "mismatch",
+                "pid": pid,
+                "game_version": gv or "新版本",
+                "sha256": actual_hash,
+                "message": f"▲ 特征码未适配 ({gv or '新版本'})",
+            }
+        finally:
+            reader.close()
+    except Exception as exc:
+        return {
+            "status": "error",
+            "pid": pid,
+            "game_version": "",
+            "sha256": "",
+            "message": f"○ 检测异常: {exc}",
+        }
+
+
+def extract_and_save_profile_for_process(
+    pid: int | None = None,
+) -> tuple[bool, str, dict[str, object] | None]:
+    """对游戏进程动态提取 IL2CPP 特征码并自动写入配置文件."""
+    from .memory.win32 import iter_processes
+
+    if pid is None:
+        target_name = "shadowversewb.exe"
+        candidates = [p for p in iter_processes() if p.name.casefold() == target_name]
+        if not candidates:
+            return False, "未找到运行中的游戏进程 (ShadowverseWB.exe)", None
+        pid = candidates[0].pid
+
+    try:
+        reader = ProcessReader(pid)
+        try:
+            module = reader.module("GameAssembly.dll")
+            actual_hash = sha256_file(module.path)
+            prof = _dynamically_extract_profile(reader, module, actual_hash)
+            if prof is not None:
+                return (
+                    True,
+                    f"成功提取并生成版本配置 ({prof.game_version})",
+                    {
+                        "game_version": prof.game_version,
+                        "unity_version": prof.unity_version,
+                        "gameassembly_sha256": prof.gameassembly_sha256,
+                        "battle_model_class_pointer_rva": hex(
+                            prof.battle_model_class_pointer_rva
+                        ),
+                        "deck_info_class_pointer_rva": hex(prof.deck_info_class_pointer_rva),
+                        "practice_battle_model_class_pointer_rva": hex(
+                            prof.practice_battle_model_class_pointer_rva
+                        ),
+                    },
+                )
+            return (
+                False,
+                "动态解析核心类指针或 RVA 槽位失败，请确认游戏已进入主界面",
+                None,
+            )
+        finally:
+            reader.close()
+    except Exception as exc:
+        return False, f"提取过程发生异常: {exc}", None
