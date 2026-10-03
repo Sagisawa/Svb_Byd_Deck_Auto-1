@@ -396,16 +396,9 @@ class DashboardPage(QWidget):
 
         self.recognition_mode_label = QLabel("识别方式")
         self.recognition_mode_combo = QComboBox()
-        self.recognition_mode_combo.addItem("内存直读 / SephiesDeckLab", "memory")
+        self.recognition_mode_combo.addItem("内存直读（内置推荐，零延迟免外部工具）", "memory")
         self.recognition_mode_combo.addItem("传统图色识别与OCR", "vision")
-        self.recognition_mode_combo.setMinimumWidth(210)
-
-        self.lab_process_combo = QComboBox()
-        self.lab_process_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        self.lab_process_combo.setMinimumWidth(260)
-        self.refresh_lab_button = QPushButton("刷新程序")
-        self.refresh_lab_button.setObjectName("SecondaryButton")
-        self.refresh_lab_button.clicked.connect(lambda: self.populate_lab_processes())
+        self.recognition_mode_combo.setMinimumWidth(280)
 
         self.wgc_window_label = QLabel("游戏窗口")
         self.wgc_window_combo = QComboBox()
@@ -428,7 +421,6 @@ class DashboardPage(QWidget):
         self.server_combo.currentTextChanged.connect(self._refresh_control_states)
         self.wgc_window_combo.currentIndexChanged.connect(self._refresh_control_states)
         self.recognition_mode_combo.currentIndexChanged.connect(self._on_recognition_mode_changed)
-        self.lab_process_combo.currentIndexChanged.connect(self._on_lab_process_changed)
 
         # 第 0 行：运行方式 + 下拉列表 + 游戏服务器 + 下拉列表 + 连接按钮
         device_form.addWidget(self.capture_method_label, 0, 0)
@@ -437,13 +429,15 @@ class DashboardPage(QWidget):
         device_form.addWidget(self.server_combo, 0, 4)
         device_form.addWidget(self.connect_button, 0, 5)
 
-        # 第 1 行：识别方式（使用SephiesDeckLab工具识别 / 传统图色识别与OCR）+ 正在运行程序选择下拉 + 刷新按钮 (WGC模式)
+        # 第 1 行：识别方式（内置内存直读 / 传统图色识别与OCR）
         mode_layout = QHBoxLayout()
         mode_layout.setContentsMargins(0, 0, 0, 0)
         mode_layout.setSpacing(10)
         mode_layout.addWidget(self.recognition_mode_combo)
-        mode_layout.addWidget(self.lab_process_combo, stretch=1)
-        mode_layout.addWidget(self.refresh_lab_button)
+        self.recognition_mode_tip = QLabel("推荐直读：自动读取游戏内存，零延迟无外部依赖")
+        self.recognition_mode_tip.setObjectName("SubtleText")
+        mode_layout.addWidget(self.recognition_mode_tip)
+        mode_layout.addStretch(1)
 
         device_form.addWidget(self.recognition_mode_label, 1, 0)
         device_form.addLayout(mode_layout, 1, 1, 1, 5)
@@ -460,7 +454,6 @@ class DashboardPage(QWidget):
         device_form.setColumnStretch(2, 1)
         control.addLayout(device_form)
         self.populate_wgc_windows()
-        self.populate_lab_processes()
         self._on_capture_method_changed()
         self.log_panel = QFrame()
         self.log_panel.setObjectName("DashboardPanel")
@@ -772,8 +765,14 @@ class DashboardPage(QWidget):
         use_memory = bool(memory_reader.get("enabled", True))
         idx = self.recognition_mode_combo.findData("memory" if use_memory else "vision")
         self.recognition_mode_combo.setCurrentIndex(max(0, idx))
-        saved_log_path = str(memory_reader.get("session_log_path") or "auto")
-        self.populate_lab_processes(preferred_path=saved_log_path)
+        try:
+            from src.bridge import get_global_tracker_bridge
+
+            bridge = get_global_tracker_bridge()
+            if use_memory:
+                bridge.start()
+        except Exception:
+            pass
         self._on_recognition_mode_changed()
         self._on_capture_method_changed()
         rotation = config.get("deck_rotation", {}) if isinstance(config, dict) else {}
@@ -822,7 +821,7 @@ class DashboardPage(QWidget):
             "enable_auto_pass": self.auto_pass_checkbox.isChecked(),
             "auto_restart_enabled": self.auto_restart_checkbox.isChecked(),
             "memory_reader_enabled": rec_mode == "memory",
-            "session_log_path": str(self.lab_process_combo.currentData() or "auto"),
+            "session_log_path": "embedded",
             "screenshot_method": "adb" if is_adb else "wgc",
             "target_hwnd": target_hwnd,
             "wgc_window_title": wgc_title,
@@ -918,8 +917,6 @@ class DashboardPage(QWidget):
             self.auto_pass_checkbox,
             self.auto_restart_checkbox,
             self.recognition_mode_combo,
-            self.lab_process_combo,
-            self.refresh_lab_button,
         ):
             control.setEnabled(settings_enabled)
 
@@ -933,11 +930,8 @@ class DashboardPage(QWidget):
         # WGC 原生控件
         self.recognition_mode_label.setVisible(not is_adb)
         self.recognition_mode_combo.setVisible(not is_adb)
-        is_memory = (not is_adb) and (
-            str(self.recognition_mode_combo.currentData() or "memory") == "memory"
-        )
-        self.lab_process_combo.setVisible(is_memory)
-        self.refresh_lab_button.setVisible(is_memory)
+        if hasattr(self, "recognition_mode_tip"):
+            self.recognition_mode_tip.setVisible(not is_adb)
 
         self.wgc_window_label.setVisible(not is_adb)
         self.wgc_window_combo.setVisible(not is_adb)
@@ -959,96 +953,7 @@ class DashboardPage(QWidget):
         self._refresh_control_states()
 
     def _on_recognition_mode_changed(self) -> None:
-        is_adb = str(self.capture_method_combo.currentData() or "wgc") == "adb"
-        is_memory = (not is_adb) and (
-            str(self.recognition_mode_combo.currentData() or "memory") == "memory"
-        )
-        self.lab_process_combo.setVisible(is_memory)
-        self.refresh_lab_button.setVisible(is_memory)
         self._refresh_control_states()
-
-    def _on_lab_process_changed(self) -> None:
-        path = str(self.lab_process_combo.currentData() or "auto")
-        if path == "__browse__":
-            from PyQt5.QtWidgets import QFileDialog
-
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "选择 app_session.jsonl 日志文件",
-                "",
-                "Session Log (*.jsonl);;All Files (*)",
-            )
-            if file_path:
-                file_path = os.path.abspath(file_path)
-                idx = self.lab_process_combo.findData(file_path)
-                if idx == -1:
-                    label = f"【自定义】{os.path.basename(os.path.dirname(os.path.dirname(file_path)))} ({file_path})"
-                    self.lab_process_combo.insertItem(1, label, file_path)
-                    idx = 1
-                self.lab_process_combo.setCurrentIndex(idx)
-                path = file_path
-            else:
-                self.lab_process_combo.setCurrentIndex(0)
-                return
-
-        if path == "embedded":
-            tip = "【内置直读】内部直接读取游戏内存 (无需启动外部记牌器，零延迟)"
-        elif path not in ("auto", "__browse__"):
-            if os.path.exists(path) and os.path.isfile(path):
-                tip = f"锁定日志: {path} (日志文件就绪)"
-            else:
-                tip = f"锁定日志: {path} (未检测到日志文件，运行时将安全回退为图色识别)"
-        else:
-            tip = "【自动探测】优先锁定当前运行中的Lab工具"
-        self.lab_process_combo.setToolTip(tip)
-
-        try:
-            from src.bridge import get_global_tracker_bridge
-
-            get_global_tracker_bridge().set_log_path(path)
-        except Exception:
-            pass
-
-    def populate_lab_processes(self, preferred_path: Optional[str] = None) -> None:
-        """刷新并填充当前运行的 Lab 程序、全部桌面窗口及日志路径列表。"""
-        if not hasattr(self, "lab_process_combo"):
-            return
-        if preferred_path is None:
-            current = self.lab_process_combo.currentData()
-            preferred_path = str(current) if current else "auto"
-
-        self.lab_process_combo.blockSignals(True)
-        self.lab_process_combo.clear()
-
-        try:
-            from src.bridge.detector import get_all_candidate_lab_targets
-
-            targets = get_all_candidate_lab_targets(preferred_path=preferred_path, include_all_windows=True)
-        except Exception:
-            targets = []
-
-        selected_idx = 0
-        for i, t in enumerate(targets):
-            self.lab_process_combo.addItem(t.label, t.log_path)
-            if t.log_path and t.log_path not in ("auto", "__browse__"):
-                tip_detail = f"日志路径: {t.log_path}" if t.log_exists else f"日志路径: {t.log_path} (文件不存在，自动回退图色)"
-                self.lab_process_combo.setItemData(i, tip_detail, Qt.ToolTipRole)
-            if preferred_path and (t.log_path == preferred_path or (preferred_path == "auto" and t.log_path == "auto")):
-                selected_idx = i
-
-        self.lab_process_combo.setCurrentIndex(selected_idx)
-        current_data = str(self.lab_process_combo.currentData() or "auto")
-        if current_data == "embedded":
-            tip = "【内置直读】内部直接读取游戏内存 (无需启动外部记牌器，零延迟)"
-        elif current_data not in ("auto", "__browse__"):
-            if os.path.exists(current_data) and os.path.isfile(current_data):
-                tip = f"锁定日志: {current_data} (日志文件就绪)"
-            else:
-                tip = f"锁定日志: {current_data} (未检测到日志文件，运行时将安全回退为图色识别)"
-        else:
-            tip = "【自动探测】优先锁定当前运行中的Lab工具"
-        self.lab_process_combo.setToolTip(tip)
-        self.lab_process_combo.blockSignals(False)
 
     def set_elapsed(self, seconds: int) -> None:
         self.runtime_metric.set_value(format_duration(seconds), "本次运行")
