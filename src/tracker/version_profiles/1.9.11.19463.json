@@ -6,5 +6,6 @@
   "gameassembly_sha256": "2EE06C4A691C7E4D24C3C1A14C71E6F36DDB0171EFC9C472B33CE3FF738E133C",
   "battle_model_class_pointer_rva": "0x8EDC1A8",
   "deck_info_class_pointer_rva": "0x8FC1898",
-  "practice_battle_model_class_pointer_rva": "0x8FC2760"
+  "practice_battle_model_class_pointer_rva": "0x8FC2760",
+  "auto_compatible": true
 }
