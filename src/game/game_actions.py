@@ -2613,6 +2613,14 @@ class GameActions:
         if not PlayPhase(self).run(post_show_sleep=0.3):
             return
 
+        from src.bridge.snapshot_adapter import is_bridge_mode_active
+        if is_bridge_mode_active(self.device_state):
+            from src.game.battle.memory_combat_coordinator import MemoryCombatCoordinator
+            coordinator = MemoryCombatCoordinator(self)
+            if coordinator.run(allow_evolve=False):
+                self.device_state.sleep(0.3)
+                return
+
         enemy_check = self._await_enemy_check(enemy_future)
         try:
             from src.bridge.helper import get_memory_adapter
@@ -2639,6 +2647,14 @@ class GameActions:
 
         if not PlayPhase(self).run(post_show_sleep=0.5):
             return
+
+        from src.bridge.snapshot_adapter import is_bridge_mode_active
+        if is_bridge_mode_active(self.device_state):
+            from src.game.battle.memory_combat_coordinator import MemoryCombatCoordinator
+            coordinator = MemoryCombatCoordinator(self)
+            if coordinator.run(allow_evolve=True):
+                self.device_state.sleep(0.3)
+                return
 
         enemy_check = self._await_enemy_check(enemy_future)
 

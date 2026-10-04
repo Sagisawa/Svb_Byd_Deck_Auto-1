@@ -585,6 +585,206 @@ class SnapshotAdapter:
         return result
 
     # -------------------------------------------------------------------------
+    # Combat & Evolution Snapshot (for joint combat planning)
+    # -------------------------------------------------------------------------
+    def get_evolution_info(self) -> Dict[str, Any]:
+        """获取进化与超进化资源与合法卡牌信息。
+
+        Returns:
+            dict containing:
+                - ep: int (剩余进化点)
+                - sep: int (剩余超进化点)
+                - can_evolve: bool (当前是否允许进行普通进化)
+                - can_super_evolve: bool (当前是否允许进行超进化)
+                - can_evolve_cards: List[int] (可普通进化的随从 unique_id 列表)
+                - can_super_evolve_cards: List[int] (可超进化的随从 unique_id 列表)
+        """
+        if not self.is_available():
+            return {
+                "ep": 0,
+                "sep": 0,
+                "can_evolve": False,
+                "can_super_evolve": False,
+                "can_evolve_cards": [],
+                "can_super_evolve_cards": [],
+            }
+
+        snap = self.get_latest_snapshot()
+        if not snap:
+            return {
+                "ep": 0,
+                "sep": 0,
+                "can_evolve": False,
+                "can_super_evolve": False,
+                "can_evolve_cards": [],
+                "can_super_evolve_cards": [],
+            }
+
+        players = snap.get("root", {}).get("players", [])
+        mine = players[0] if (players and isinstance(players[0], dict)) else {}
+        ep = int(mine.get("evolve_points", 0) or 0)
+        sep = int(mine.get("super_evolve_points", 0) or 0)
+
+        legal = snap.get("legal_actions") or snap.get("root", {}).get("legal_actions") or {}
+        can_evo_list = list(legal.get("can_evolve_cards") or [])
+        can_sevo_list = list(
+            set(legal.get("can_super_evolve_cards") or [])
+            | set(legal.get("can_super_evolve_with_skill_cards") or [])
+        )
+
+        can_evolve = (ep > 0 and len(can_evo_list) > 0)
+        can_super_evolve = (sep > 0 and len(can_sevo_list) > 0)
+
+        return {
+            "ep": ep,
+            "sep": sep,
+            "can_evolve": can_evolve,
+            "can_super_evolve": can_super_evolve,
+            "can_evolve_cards": can_evo_list,
+            "can_super_evolve_cards": can_sevo_list,
+        }
+
+    def get_combat_snapshot(self) -> Optional[Dict[str, Any]]:
+        """获取包含双方随从、主战者、守护状态及进化权限的战斗快照，供 MemoryCombatPlanner 联合决策。
+
+        Returns None if memory reading mode is unavailable.
+        """
+        if not self.is_available():
+            return None
+
+        snap = self.get_latest_snapshot()
+        if not snap:
+            return None
+
+        players = snap.get("root", {}).get("players", [])
+        if not players or not isinstance(players[0], dict):
+            return None
+
+        mine = players[0]
+        field_cards = [c for c in mine.get("field", []) if isinstance(c, dict)]
+        total_ours = min(max(len(field_cards), 1), 5) if field_cards else 0
+
+        legal = snap.get("legal_actions") or snap.get("root", {}).get("legal_actions") or {}
+        attack_leader_cards = set(legal.get("can_attack_leader_cards") or [])
+        attack_field_cards = set(legal.get("can_attack_field_cards") or [])
+        attacked_cards = set(legal.get("attacked_cards") or [])
+
+        evo_info = self.get_evolution_info()
+        can_evo_cards_set = set(evo_info["can_evolve_cards"])
+        can_sevo_cards_set = set(evo_info["can_super_evolve_cards"])
+
+        our_followers: List[Dict[str, Any]] = []
+        for idx, card in enumerate(field_cards):
+            d = idx - (total_ours - 1) / 2.0
+            u = 0.4984 + d * 0.1172
+            v = 0.5417
+            x = int(u * self.VIEWPORT_W)
+            y = int(v * self.VIEWPORT_H)
+
+            uid = int(card.get("unique_id", 0) or 0)
+            cid = int(card.get("card_id", 0) or card.get("base_card_id", 0) or 0)
+            name = self.resolver.get_name(cid) or ""
+
+            card_type = int(card.get("card_type", 1) or 1)
+            countdown = int(card.get("countdown", 0) or 0)
+            is_amulet = (card_type in (2, 3)) or (countdown > 0)
+
+            can_attack_ldr = (uid in attack_leader_cards) or bool(card.get("can_attack_leader"))
+            can_attack_fld = (uid in attack_field_cards) or bool(card.get("can_attack_field"))
+            has_atk = (uid in attacked_cards) or bool(card.get("has_attacked"))
+
+            evolve_state = int(card.get("evolve_state", 0) or 0)
+            # 是否可以进行普通/超进化
+            can_evolve = (uid in can_evo_cards_set) if can_evo_cards_set else (evolve_state == 0 and evo_info["ep"] > 0)
+            can_super_evolve = (uid in can_sevo_cards_set) if can_sevo_cards_set else (evolve_state == 0 and evo_info["sep"] > 0)
+
+            attack_limit = int(card.get("attack_limit", 1) or 1)
+            attacks_left = 0
+            if not card.get("has_cant_attack", False):
+                if can_attack_ldr or can_attack_fld:
+                    attacks_left = max(1, attack_limit - (1 if has_atk else 0))
+
+            our_followers.append({
+                "unique_id": uid,
+                "card_id": cid,
+                "name": name,
+                "x": x,
+                "y": y,
+                "atk": int(card.get("attack", 0) or 0),
+                "hp": int(card.get("life", 1) or 1),
+                "max_hp": int(card.get("max_life", card.get("life", 1)) or 1),
+                "is_amulet": is_amulet,
+                "evolve_state": evolve_state,
+                "can_evolve": can_evolve and not is_amulet,
+                "can_super_evolve": can_super_evolve and not is_amulet,
+                "can_attack_leader": bool(can_attack_ldr) and not is_amulet,
+                "can_attack_field": bool(can_attack_fld) and not is_amulet,
+                "has_attacked": bool(has_atk),
+                "attacks_left": attacks_left,
+                "has_guard": bool(card.get("has_guard", False)),
+                "has_killer": bool(card.get("has_killer", False)),
+                "has_temp_shield": bool(card.get("has_temp_shield", False)),
+                "has_cant_attack": bool(card.get("has_cant_attack", False)),
+                "has_cant_be_attacked": bool(card.get("has_cant_be_attacked", False)),
+            })
+
+        enemy_followers: List[Dict[str, Any]] = []
+        enemy_leader_hp = 20
+        if len(players) >= 2 and isinstance(players[1], dict):
+            enemy = players[1]
+            enemy_leader_hp = int(enemy.get("life", 20) or 20)
+            enemy_field_cards = [c for c in enemy.get("field", []) if isinstance(c, dict)]
+            enemy_field_cards = list(reversed(enemy_field_cards))
+            total_enemy = len(enemy_field_cards)
+
+            for idx, card in enumerate(enemy_field_cards):
+                if total_enemy <= 1:
+                    u = 0.4984
+                else:
+                    d = idx - (total_enemy - 1) / 2.0
+                    u = 0.4984 + d * 0.1156
+                v = 0.3000
+                x = int(u * self.VIEWPORT_W)
+                y = int(v * self.VIEWPORT_H)
+
+                cid = int(card.get("card_id", 0) or card.get("base_card_id", 0) or 0)
+                name = self.resolver.get_name(cid) or ""
+                card_type = int(card.get("card_type", 1) or 1)
+                countdown = int(card.get("countdown", 0) or 0)
+                is_amulet = (card_type in (2, 3)) or (countdown > 0)
+
+                enemy_followers.append({
+                    "unique_id": int(card.get("unique_id", 0) or 0),
+                    "card_id": cid,
+                    "name": name,
+                    "x": x,
+                    "y": y,
+                    "atk": int(card.get("attack", 0) or 0),
+                    "hp": int(card.get("life", 1) or 1),
+                    "is_amulet": is_amulet,
+                    "has_guard": bool(card.get("has_guard", False)),
+                    "has_cant_be_attacked": bool(card.get("has_cant_be_attacked", False)),
+                    "has_killer": bool(card.get("has_killer", False)),
+                    "has_temp_shield": bool(card.get("has_temp_shield", False)),
+                    "has_cant_select": bool(card.get("has_cant_select", False)),
+                })
+
+        return {
+            "our_followers": our_followers,
+            "enemy_followers": enemy_followers,
+            "enemy_leader": {
+                "hp": enemy_leader_hp,
+                "x": 646,
+                "y": 64,
+            },
+            "our_leader": {
+                "hp": int(mine.get("life", 20) or 20),
+            },
+            "evolution_info": evo_info,
+            "turn": int(mine.get("turn", 0) or 0),
+        }
+
+    # -------------------------------------------------------------------------
     # Domain ObservedGameState
     # -------------------------------------------------------------------------
     def build_observed_game_state(self, note: str = "memory_bridge") -> Optional[ObservedGameState]:
