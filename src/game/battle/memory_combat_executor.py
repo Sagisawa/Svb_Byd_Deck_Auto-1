@@ -77,9 +77,9 @@ class MemoryCombatExecutor:
 
         logger.info(f"[MemoryCombatExecutor] Clicking follower at {pos} for evolution")
         device.click(pos[0], pos[1])
-        self.device_state.sleep(0.4)
+        self._wait_screen_stable(timeout=2.0, desc="随从进化弹窗展开")
 
-        screenshot = self.device_state.take_screenshot()
+        screenshot = self.device_state.take_screenshot() if self.device_state else None
         if screenshot is None:
             logger.warning("[MemoryCombatExecutor] Screenshot failed during evolution")
             self._close_panel_safely()
@@ -145,7 +145,8 @@ class MemoryCombatExecutor:
 
         self._record_attack_spent(action)
         self._trigger_on_attack_effect(action)
-        self.device_state.sleep(0.6)
+        self._wait_screen_stable(timeout=8.0, desc=f"主将直伤攻击结算: {action.source_name}")
+        self._verify_attack_memory(action)
 
     def _execute_attack_follower(self, action: CombatAction) -> None:
         """Drags friendly follower to attack an enemy follower."""
@@ -174,7 +175,8 @@ class MemoryCombatExecutor:
 
         self._record_attack_spent(action)
         self._trigger_on_attack_effect(action)
-        self.device_state.sleep(1.3)
+        self._wait_screen_stable(timeout=10.0, desc=f"随从对战攻击结算: {action.source_name} -> {action.target_name}")
+        self._verify_attack_memory(action)
 
     def _record_attack_spent(self, action: CombatAction) -> None:
         """Updates internal battle runtime and slot tracker for spent attack."""
@@ -204,6 +206,49 @@ class MemoryCombatExecutor:
     def _close_panel_safely(self) -> None:
         """Clicks blank panel to close any follower details dialog."""
         try:
-            self.actions._click_blank_panel(sleep_seconds=0.3)
+            self.actions._click_blank_panel(sleep_seconds=0.2)
+            self._wait_screen_stable(timeout=2.0, desc="关闭详情面板")
         except Exception:
             pass
+
+    def _wait_screen_stable(self, timeout: float = 6.0, desc: str = "") -> bool:
+        """Waits for screen animations to finish and stabilize using existing stillness detector."""
+        if self.device_state is not None:
+            wait_fn = getattr(self.device_state, "wait_for_screen_stable", None)
+            if callable(wait_fn):
+                try:
+                    return bool(wait_fn(timeout=timeout, desc=desc))
+                except Exception as e:
+                    logger.warning(f"[MemoryCombatExecutor] wait_for_screen_stable failed: {e}")
+            sleep_fn = getattr(self.device_state, "sleep", None)
+            if callable(sleep_fn):
+                sleep_fn(0.5)
+                return True
+        return True
+
+    def _verify_attack_memory(self, action: CombatAction) -> None:
+        """Verifies and logs attack outcome from memory state if available."""
+        if not self.adapter or not self.adapter.is_available():
+            return
+        try:
+            snap = self.adapter.get_combat_snapshot()
+            if not snap:
+                return
+            if action.action_type == "attack_leader":
+                leader_hp = snap.get("enemy_leader", {}).get("hp")
+                logger.info(f"[MemoryCombatExecutor] Post-attack enemy leader HP: {leader_hp}")
+            elif action.action_type == "attack_follower":
+                target = next(
+                    (f for f in (snap.get("enemy_followers") or []) if f.get("unique_id") == action.target_uid),
+                    None,
+                )
+                if target:
+                    logger.info(
+                        f"[MemoryCombatExecutor] Post-attack target {action.target_name} HP: {target.get('hp')}"
+                    )
+                else:
+                    logger.info(
+                        f"[MemoryCombatExecutor] Post-attack target {action.target_name} destroyed"
+                    )
+        except Exception as e:
+            logger.debug(f"[MemoryCombatExecutor] Attack memory check error: {e}")

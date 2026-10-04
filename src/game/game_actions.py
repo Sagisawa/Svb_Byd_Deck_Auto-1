@@ -2618,7 +2618,10 @@ class GameActions:
             from src.game.battle.memory_combat_coordinator import MemoryCombatCoordinator
             coordinator = MemoryCombatCoordinator(self)
             if coordinator.run(allow_evolve=False):
-                self.device_state.sleep(0.3)
+                if hasattr(self.device_state, "wait_for_screen_stable"):
+                    self.device_state.wait_for_screen_stable(timeout=4.0, desc="内存战斗结算场面稳定")
+                elif hasattr(self.device_state, "sleep"):
+                    self.device_state.sleep(0.3)
                 return
 
         enemy_check = self._await_enemy_check(enemy_future)
@@ -2653,7 +2656,10 @@ class GameActions:
             from src.game.battle.memory_combat_coordinator import MemoryCombatCoordinator
             coordinator = MemoryCombatCoordinator(self)
             if coordinator.run(allow_evolve=True):
-                self.device_state.sleep(0.3)
+                if hasattr(self.device_state, "wait_for_screen_stable"):
+                    self.device_state.wait_for_screen_stable(timeout=4.0, desc="内存战斗结算场面稳定")
+                elif hasattr(self.device_state, "sleep"):
+                    self.device_state.sleep(0.3)
                 return
 
         enemy_check = self._await_enemy_check(enemy_future)

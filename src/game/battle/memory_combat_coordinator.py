@@ -74,9 +74,24 @@ class MemoryCombatCoordinator:
         executor.execute(plan)
 
         # Post-combat memory check and follow-up
-        self.device_state.sleep(0.3)
+        self._wait_screen_stable(timeout=4.0, desc="战斗结算场面稳定")
         self._check_post_combat_follow_up()
 
+        return True
+
+    def _wait_screen_stable(self, timeout: float = 4.0, desc: str = "") -> bool:
+        """Waits for screen animations to finish and stabilize using existing stillness detector."""
+        if self.device_state is not None:
+            wait_fn = getattr(self.device_state, "wait_for_screen_stable", None)
+            if callable(wait_fn):
+                try:
+                    return bool(wait_fn(timeout=timeout, desc=desc))
+                except Exception as e:
+                    logger.warning(f"[MemoryCombatCoordinator] wait_for_screen_stable failed: {e}")
+            sleep_fn = getattr(self.device_state, "sleep", None)
+            if callable(sleep_fn):
+                sleep_fn(0.3)
+                return True
         return True
 
     def _check_post_combat_follow_up(self) -> None:
@@ -119,3 +134,4 @@ class MemoryCombatCoordinator:
             if follow_up_plan and follow_up_plan.actions:
                 executor = MemoryCombatExecutor(self.actions, self.adapter)
                 executor.execute(follow_up_plan)
+                self._wait_screen_stable(timeout=4.0, desc="追击结算场面稳定")

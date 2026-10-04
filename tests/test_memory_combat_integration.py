@@ -231,6 +231,177 @@ class TestMemoryCombatIntegration(unittest.TestCase):
         self.assertTrue(followers[102]["has_rush"])
         self.assertFalse(followers[102]["can_face_inherent"])
 
+    def test_executor_uses_screen_stable_on_attacks(self):
+        from src.game.battle.memory_combat_planner import CombatAction, CombatPlan
+
+        mock_actions = MagicMock()
+        mock_u2 = MagicMock()
+        mock_actions._require_u2_device.return_value = mock_u2
+        mock_ds = MagicMock()
+        mock_actions.device_state = mock_ds
+
+        executor = MemoryCombatExecutor(mock_actions, snapshot_adapter=self.adapter)
+        plan = CombatPlan(
+            total_face_damage=3,
+            is_lethal=False,
+            enemy_leader_remaining_hp=10,
+            wards_cleared=True,
+            actions=[
+                CombatAction(
+                    action_type="attack_follower",
+                    source_uid=101,
+                    source_name="Fighter",
+                    source_pos=(400, 500),
+                    target_uid=201,
+                    target_name="Goblin",
+                    target_pos=(400, 200),
+                    damage_dealt=2,
+                ),
+                CombatAction(
+                    action_type="attack_leader",
+                    source_uid=102,
+                    source_name="Knight",
+                    source_pos=(500, 500),
+                    target_pos=(646, 64),
+                    damage_dealt=3,
+                ),
+            ]
+        )
+
+        success = executor.execute(plan)
+        self.assertTrue(success)
+
+        # Verify wait_for_screen_stable was called for both attacks
+        call_descs = [
+            kwargs.get("desc", "")
+            for args, kwargs in mock_ds.wait_for_screen_stable.call_args_list
+        ]
+        self.assertTrue(any("随从对战攻击结算" in d for d in call_descs))
+        self.assertTrue(any("主将直伤攻击结算" in d for d in call_descs))
+
+    def test_executor_screen_stable_fallback_when_wait_fails(self):
+        from src.game.battle.memory_combat_planner import CombatAction, CombatPlan
+
+        mock_actions = MagicMock()
+        mock_u2 = MagicMock()
+        mock_actions._require_u2_device.return_value = mock_u2
+        mock_ds = MagicMock()
+        mock_ds.wait_for_screen_stable.side_effect = RuntimeError("Screenshot device lost")
+        mock_actions.device_state = mock_ds
+
+        executor = MemoryCombatExecutor(mock_actions, snapshot_adapter=self.adapter)
+        plan = CombatPlan(
+            total_face_damage=3,
+            is_lethal=False,
+            enemy_leader_remaining_hp=10,
+            wards_cleared=True,
+            actions=[
+                CombatAction(
+                    action_type="attack_leader",
+                    source_uid=101,
+                    source_name="Knight",
+                    source_pos=(500, 500),
+                    target_pos=(646, 64),
+                    damage_dealt=3,
+                )
+            ]
+        )
+
+        # Should catch error, log warning, and fall back to sleep without raising
+        success = executor.execute(plan)
+        self.assertTrue(success)
+        mock_ds.sleep.assert_called()
+
+    def test_coordinator_uses_screen_stable(self):
+        mock_actions = MagicMock()
+        mock_actions.device_state._bridge_active = True
+        mock_u2 = MagicMock()
+        mock_actions._require_u2_device.return_value = mock_u2
+        mock_ds = mock_actions.device_state
+
+        raw_snap = {
+            "root": {
+                "players": [
+                    {
+                        "turn": 5,
+                        "life": 20,
+                        "evolve_points": 0,
+                        "super_evolve_points": 0,
+                        "field": [
+                            {
+                                "unique_id": 101,
+                                "card_id": 1001,
+                                "life": 4,
+                                "attack": 4,
+                                "cost": 4,
+                                "card_type": 1,
+                                "can_attack_leader": True,
+                                "can_attack_field": True,
+                            }
+                        ],
+                    },
+                    {
+                        "life": 10,
+                        "field": [],
+                    },
+                ],
+                "legal_actions": {
+                    "can_attack_leader_cards": [101],
+                },
+            }
+        }
+        self.mock_bridge.get_snapshot.return_value = raw_snap
+
+        coordinator = MemoryCombatCoordinator(mock_actions, snapshot_adapter=self.adapter)
+        result = coordinator.run(allow_evolve=False)
+        self.assertTrue(result)
+
+        # Verify wait_for_screen_stable was invoked on device_state
+        call_descs = [
+            kwargs.get("desc", "")
+            for args, kwargs in mock_ds.wait_for_screen_stable.call_args_list
+        ]
+        self.assertTrue(any("战斗结算场面稳定" in d for d in call_descs))
+
+    def test_executor_uses_screen_stable_on_evolution(self):
+        from src.game.battle.memory_combat_planner import CombatAction, CombatPlan
+
+        mock_actions = MagicMock()
+        mock_u2 = MagicMock()
+        mock_actions._require_u2_device.return_value = mock_u2
+        mock_ds = MagicMock()
+        from PIL import Image
+        mock_ds.take_screenshot.return_value = Image.new("RGB", (100, 100), color="black")
+        mock_actions.device_state = mock_ds
+        mock_actions._try_apply_normal_evolution.return_value = True
+
+        executor = MemoryCombatExecutor(mock_actions, snapshot_adapter=self.adapter)
+        plan = CombatPlan(
+            total_face_damage=0,
+            is_lethal=False,
+            enemy_leader_remaining_hp=20,
+            wards_cleared=True,
+            actions=[
+                CombatAction(
+                    action_type="evolve_normal",
+                    source_uid=101,
+                    source_name="Knight",
+                    source_pos=(500, 500),
+                )
+            ],
+        )
+
+        success = executor.execute(plan)
+        self.assertTrue(success)
+
+        # Verify wait_for_screen_stable was called for evolution panel opening and closing
+        call_descs = [
+            kwargs.get("desc", "")
+            for args, kwargs in mock_ds.wait_for_screen_stable.call_args_list
+        ]
+        self.assertTrue(any("随从进化弹窗展开" in d for d in call_descs))
+        self.assertTrue(any("关闭详情面板" in d for d in call_descs))
+
 
 if __name__ == "__main__":
     unittest.main()
