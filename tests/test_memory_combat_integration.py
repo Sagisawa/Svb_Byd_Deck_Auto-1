@@ -156,6 +156,81 @@ class TestMemoryCombatIntegration(unittest.TestCase):
         # Verify swipe was invoked on device
         mock_u2.swipe.assert_called()
 
+    def test_get_evolution_info_fallback_when_legal_actions_empty(self):
+        raw_snap = {
+            "root": {
+                "players": [
+                    {
+                        "evolve_points": 2,
+                        "super_evolve_points": 1,
+                        "field": [],
+                    },
+                ],
+                "legal_actions": {},
+            }
+        }
+        self.mock_bridge.get_snapshot.return_value = raw_snap
+        info = self.adapter.get_evolution_info()
+        self.assertEqual(info["ep"], 2)
+        self.assertEqual(info["sep"], 1)
+        self.assertTrue(info["can_evolve"])
+        self.assertTrue(info["can_super_evolve"])
+
+    def test_get_combat_snapshot_detects_storm_and_rush(self):
+        raw_snap = {
+            "root": {
+                "players": [
+                    {
+                        "turn": 4,
+                        "life": 20,
+                        "evolve_points": 1,
+                        "super_evolve_points": 0,
+                        "field": [
+                            {
+                                "unique_id": 101,
+                                "card_id": 1001,
+                                "life": 3,
+                                "attack": 2,
+                                "buff": {"quick": True},  # Storm
+                            },
+                            {
+                                "unique_id": 102,
+                                "card_id": 1002,
+                                "life": 2,
+                                "attack": 2,
+                                "buff": {"rush": True},  # Rush
+                            },
+                        ],
+                    },
+                    {
+                        "life": 15,
+                        "field": [
+                            {
+                                "unique_id": 201,
+                                "card_id": 2001,
+                                "life": 2,
+                                "attack": 2,
+                                "has_guard": True,
+                            }
+                        ],
+                    },
+                ],
+                "legal_actions": {
+                    "can_attack_field_cards": [101, 102],
+                    # Notice: can_attack_leader_cards is EMPTY because of the enemy ward (201)
+                    "can_attack_leader_cards": [],
+                },
+            }
+        }
+        self.mock_bridge.get_snapshot.return_value = raw_snap
+        snap = self.adapter.get_combat_snapshot()
+        self.assertIsNotNone(snap)
+        followers = {f["unique_id"]: f for f in snap["our_followers"]}
+        self.assertTrue(followers[101]["has_storm"])
+        self.assertTrue(followers[101]["can_face_inherent"])
+        self.assertTrue(followers[102]["has_rush"])
+        self.assertFalse(followers[102]["can_face_inherent"])
+
 
 if __name__ == "__main__":
     unittest.main()

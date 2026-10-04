@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.bridge.board_formatter import _extract_static_keywords
 from src.bridge.card_name_resolver import CardNameResolver
 from src.bridge.tracker_bridge import TrackerBridge, get_global_tracker_bridge
 from src.game.domain.models import ObservedGameState
@@ -632,8 +633,14 @@ class SnapshotAdapter:
             | set(legal.get("can_super_evolve_with_skill_cards") or [])
         )
 
-        can_evolve = (ep > 0 and len(can_evo_list) > 0)
-        can_super_evolve = (sep > 0 and len(can_sevo_list) > 0)
+        has_evo_projection = "can_evolve_cards" in legal
+        has_sevo_projection = (
+            "can_super_evolve_cards" in legal
+            or "can_super_evolve_with_skill_cards" in legal
+        )
+
+        can_evolve = (len(can_evo_list) > 0) if has_evo_projection else (ep > 0)
+        can_super_evolve = (len(can_sevo_list) > 0) if has_sevo_projection else (sep > 0)
 
         return {
             "ep": ep,
@@ -672,37 +679,85 @@ class SnapshotAdapter:
         evo_info = self.get_evolution_info()
         can_evo_cards_set = set(evo_info["can_evolve_cards"])
         can_sevo_cards_set = set(evo_info["can_super_evolve_cards"])
+        has_evo_proj = "can_evolve_cards" in legal
+        has_sevo_proj = (
+            "can_super_evolve_cards" in legal
+            or "can_super_evolve_with_skill_cards" in legal
+        )
 
         our_followers: List[Dict[str, Any]] = []
         for idx, card in enumerate(field_cards):
             d = idx - (total_ours - 1) / 2.0
             u = 0.4984 + d * 0.1172
             v = 0.5417
-            x = int(u * self.VIEWPORT_W)
-            y = int(v * self.VIEWPORT_H)
+            x = int(card.get("x") if card.get("x") is not None else int(u * self.VIEWPORT_W))
+            y = int(card.get("y") if card.get("y") is not None else int(v * self.VIEWPORT_H))
 
             uid = int(card.get("unique_id", 0) or 0)
             cid = int(card.get("card_id", 0) or card.get("base_card_id", 0) or 0)
+            base_cid = int(card.get("base_card_id", 0) or 0)
             name = self.resolver.get_name(cid) or ""
 
             card_type = int(card.get("card_type", 1) or 1)
             countdown = int(card.get("countdown", 0) or 0)
             is_amulet = (card_type in (2, 3)) or (countdown > 0)
 
+            # 1. 疾驰 (Storm) 与突进 (Rush) 判定
+            has_storm = bool(card.get("has_storm") or card.get("storm"))
+            has_rush = bool(card.get("has_rush") or card.get("rush"))
+            buff = card.get("buff")
+            if isinstance(buff, dict):
+                if buff.get("quick"):
+                    has_storm = True
+                if buff.get("rush"):
+                    has_rush = True
+
+            static_kw = _extract_static_keywords(cid or base_cid)
+            if "疾驰" in static_kw:
+                has_storm = True
+            if "突进" in static_kw:
+                has_rush = True
+
+            statuses = card.get("statuses") or card.get("keywords")
+            if isinstance(statuses, (list, tuple, set)):
+                for s in statuses:
+                    s_str = str(s).lower()
+                    if s_str in ("storm", "疾驰", "quick"):
+                        has_storm = True
+                    elif s_str in ("rush", "突进"):
+                        has_rush = True
+
             can_attack_ldr = (uid in attack_leader_cards) or bool(card.get("can_attack_leader"))
             can_attack_fld = (uid in attack_field_cards) or bool(card.get("can_attack_field"))
             has_atk = (uid in attacked_cards) or bool(card.get("has_attacked"))
 
-            evolve_state = int(card.get("evolve_state", 0) or 0)
-            # 是否可以进行普通/超进化
-            can_evolve = (uid in can_evo_cards_set) if can_evo_cards_set else (evolve_state == 0 and evo_info["ep"] > 0)
-            can_super_evolve = (uid in can_sevo_cards_set) if can_sevo_cards_set else (evolve_state == 0 and evo_info["sep"] > 0)
+            # 无法攻击主战者限制检查
+            cant_act = int(card.get("cant_action_type", 0) or 0)
+            cant_face_flag = bool(card.get("has_cant_attack_leader", False)) or bool(cant_act & 1)
 
-            attack_limit = int(card.get("attack_limit", 1) or 1)
-            attacks_left = 0
-            if not card.get("has_cant_attack", False):
-                if can_attack_ldr or can_attack_fld:
-                    attacks_left = max(1, attack_limit - (1 if has_atk else 0))
+            # Inherent face capability (ability to attack enemy leader once enemy wards are cleared):
+            if card.get("has_cant_attack", False) or cant_face_flag:
+                can_face_inherent = False
+            elif can_attack_ldr or has_storm:
+                can_face_inherent = True
+            elif can_attack_fld and not has_rush:
+                # 登场于前序回合且无突进限制的随从，拥有攻击主战者资格（仅受敌方守护阻挡）
+                can_face_inherent = True
+            else:
+                can_face_inherent = False
+
+            evolve_state = int(card.get("evolve_state", 0) or 0)
+            can_evolve = (uid in can_evo_cards_set) if has_evo_proj else (evolve_state == 0 and evo_info["ep"] > 0)
+            can_super_evolve = (uid in can_sevo_cards_set) if has_sevo_proj else (evolve_state == 0 and evo_info["sep"] > 0)
+
+            if card.get("attacks_left") is not None:
+                attacks_left = max(0, int(card.get("attacks_left")))
+            else:
+                attack_limit = int(card.get("attack_limit", 1) or 1)
+                attacks_left = 0
+                if not card.get("has_cant_attack", False):
+                    if can_attack_ldr or can_attack_fld or has_storm:
+                        attacks_left = max(0, attack_limit - (1 if has_atk else 0))
 
             our_followers.append({
                 "unique_id": uid,
@@ -717,8 +772,11 @@ class SnapshotAdapter:
                 "evolve_state": evolve_state,
                 "can_evolve": can_evolve and not is_amulet,
                 "can_super_evolve": can_super_evolve and not is_amulet,
-                "can_attack_leader": bool(can_attack_ldr) and not is_amulet,
-                "can_attack_field": bool(can_attack_fld) and not is_amulet,
+                "can_attack_leader": (can_face_inherent or can_attack_ldr) and not is_amulet,
+                "can_attack_field": (can_attack_fld or has_storm or can_face_inherent) and not is_amulet,
+                "can_face_inherent": can_face_inherent and not is_amulet,
+                "has_storm": has_storm,
+                "has_rush": has_rush,
                 "has_attacked": bool(has_atk),
                 "attacks_left": attacks_left,
                 "has_guard": bool(card.get("has_guard", False)),
@@ -744,8 +802,8 @@ class SnapshotAdapter:
                     d = idx - (total_enemy - 1) / 2.0
                     u = 0.4984 + d * 0.1156
                 v = 0.3000
-                x = int(u * self.VIEWPORT_W)
-                y = int(v * self.VIEWPORT_H)
+                x = int(card.get("x") if card.get("x") is not None else int(u * self.VIEWPORT_W))
+                y = int(card.get("y") if card.get("y") is not None else int(v * self.VIEWPORT_H))
 
                 cid = int(card.get("card_id", 0) or card.get("base_card_id", 0) or 0)
                 name = self.resolver.get_name(cid) or ""
@@ -767,6 +825,7 @@ class SnapshotAdapter:
                     "has_killer": bool(card.get("has_killer", False)),
                     "has_temp_shield": bool(card.get("has_temp_shield", False)),
                     "has_cant_select": bool(card.get("has_cant_select", False)),
+                    "has_sneak": bool(card.get("has_sneak", False)),
                 })
 
         return {

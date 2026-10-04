@@ -62,12 +62,17 @@ class SimUnit:
     is_amulet: bool = False
     can_attack_leader: bool = False
     can_attack_field: bool = False
+    can_face_inherent: bool = False
+    has_storm: bool = False
+    has_rush: bool = False
+    has_attacked: bool = False
     attacks_left: int = 1
     has_guard: bool = False  # Ward
     has_killer: bool = False  # Bane
     has_temp_shield: bool = False  # Divine Shield
     has_cant_be_attacked: bool = False
     has_cant_attack: bool = False
+    has_sneak: bool = False  # Ambush / Stealth
     evolve_state: int = 0  # 0: none, 1: normal, 2: super
     can_evolve: bool = False
     can_super_evolve: bool = False
@@ -84,12 +89,17 @@ class SimUnit:
             is_amulet=self.is_amulet,
             can_attack_leader=self.can_attack_leader,
             can_attack_field=self.can_attack_field,
+            can_face_inherent=self.can_face_inherent,
+            has_storm=self.has_storm,
+            has_rush=self.has_rush,
+            has_attacked=self.has_attacked,
             attacks_left=self.attacks_left,
             has_guard=self.has_guard,
             has_killer=self.has_killer,
             has_temp_shield=self.has_temp_shield,
             has_cant_be_attacked=self.has_cant_be_attacked,
             has_cant_attack=self.has_cant_attack,
+            has_sneak=self.has_sneak,
             evolve_state=self.evolve_state,
             can_evolve=self.can_evolve,
             can_super_evolve=self.can_super_evolve,
@@ -127,6 +137,17 @@ class MemoryCombatPlanner:
         for u in our_units_raw:
             if u.get("is_amulet"):
                 continue
+
+            can_face_inherent = bool(
+                u.get("can_face_inherent", u.get("can_attack_leader", False))
+            )
+            has_storm = bool(u.get("has_storm", False))
+            has_rush = bool(u.get("has_rush", False))
+            has_atk = bool(u.get("has_attacked", False))
+
+            if has_storm:
+                can_face_inherent = True
+
             our_units.append(
                 SimUnit(
                     uid=int(u.get("unique_id", 0)),
@@ -137,14 +158,19 @@ class MemoryCombatPlanner:
                     hp=int(u.get("hp", 1)),
                     max_hp=int(u.get("max_hp", u.get("hp", 1))),
                     is_amulet=False,
-                    can_attack_leader=bool(u.get("can_attack_leader", False)),
-                    can_attack_field=bool(u.get("can_attack_field", False)),
-                    attacks_left=int(u.get("attacks_left", 0)),
+                    can_attack_leader=can_face_inherent,
+                    can_attack_field=bool(u.get("can_attack_field", False)) or can_face_inherent,
+                    can_face_inherent=can_face_inherent,
+                    has_storm=has_storm,
+                    has_rush=has_rush,
+                    has_attacked=has_atk,
+                    attacks_left=int(u.get("attacks_left", 0 if has_atk else 1)),
                     has_guard=bool(u.get("has_guard", False)),
                     has_killer=bool(u.get("has_killer", False)),
                     has_temp_shield=bool(u.get("has_temp_shield", False)),
                     has_cant_be_attacked=bool(u.get("has_cant_be_attacked", False)),
                     has_cant_attack=bool(u.get("has_cant_attack", False)),
+                    has_sneak=bool(u.get("has_sneak", False)),
                     evolve_state=int(u.get("evolve_state", 0)),
                     can_evolve=bool(u.get("can_evolve", False)) and can_normal_evo_global,
                     can_super_evolve=bool(u.get("can_super_evolve", False)) and can_super_evo_global,
@@ -167,12 +193,17 @@ class MemoryCombatPlanner:
                     is_amulet=False,
                     can_attack_leader=False,
                     can_attack_field=False,
+                    can_face_inherent=False,
+                    has_storm=False,
+                    has_rush=False,
+                    has_attacked=False,
                     attacks_left=0,
                     has_guard=bool(u.get("has_guard", False)),
                     has_killer=bool(u.get("has_killer", False)),
                     has_temp_shield=bool(u.get("has_temp_shield", False)),
                     has_cant_be_attacked=bool(u.get("has_cant_be_attacked", False)),
                     has_cant_attack=False,
+                    has_sneak=bool(u.get("has_sneak", False)),
                 )
             )
 
@@ -217,16 +248,21 @@ class MemoryCombatPlanner:
                 target_u.max_hp += bonus
                 target_u.evolve_state = 2 if evo_type == "super" else 1
 
-                # If follower could already hit leader, it keeps the ability (ATK converts directly to face damage)
-                # If follower was fresh (could not attack), it gains Rush (can attack followers/wards, CANNOT attack leader)
-                if target_u.can_attack_leader:
+                # If follower already had face attack capability (storm or previous turn),
+                # it keeps it and gains +bonus directly to face damage!
+                # If fresh without storm, it gains Rush (attacks followers/wards, NOT leader).
+                if target_u.can_face_inherent:
+                    target_u.can_face_inherent = True
                     target_u.can_attack_leader = True
                     target_u.can_attack_field = True
-                    target_u.attacks_left = max(1, target_u.attacks_left)
+                    if not target_u.has_attacked:
+                        target_u.attacks_left = max(1, target_u.attacks_left)
                 else:
                     target_u.can_attack_field = True
                     target_u.can_attack_leader = False
-                    target_u.attacks_left = max(1, target_u.attacks_left)
+                    target_u.can_face_inherent = False
+                    if not target_u.has_attacked:
+                        target_u.attacks_left = max(1, target_u.attacks_left)
 
                 evo_action = CombatAction(
                     action_type="evolve_" + evo_type,
@@ -293,7 +329,7 @@ class MemoryCombatPlanner:
     def _are_wards_cleared(cls, enemy_units: List[SimUnit]) -> bool:
         """Returns True if no alive enemy units with Ward exist."""
         return not any(
-            u.has_guard and u.hp > 0 and not u.is_amulet and not u.has_cant_be_attacked
+            u.has_guard and u.hp > 0 and not u.is_amulet and not u.has_cant_be_attacked and not u.has_sneak
             for u in enemy_units
         )
 
@@ -334,19 +370,36 @@ class MemoryCombatPlanner:
 
             active_wards = [
                 e for e in current_enemy
-                if e.has_guard and e.hp > 0 and not e.is_amulet and not e.has_cant_be_attacked
+                if e.has_guard and e.hp > 0 and not e.is_amulet and not e.has_cant_be_attacked and not e.has_sneak
             ]
             wards_cleared = (len(active_wards) == 0)
 
             # Available attackers
             avail_attackers = [
                 u for u in current_ours
-                if u.hp > 0 and u.attacks_left > 0 and not u.has_cant_attack and (u.can_attack_leader or u.can_attack_field)
+                if u.hp > 0 and u.attacks_left > 0 and not u.has_cant_attack and (u.can_attack_leader or u.can_attack_field or u.can_face_inherent)
             ]
+
+            # Evaluate current state as a potential baseline/stop point
+            current_eval = cls._evaluate_attack_state(
+                face_damage=current_face_dmg,
+                leader_remaining_hp=current_leader_hp,
+                wards_cleared=wards_cleared,
+                surviving_ours=current_ours,
+                surviving_enemy=current_enemy,
+            )
+            if current_eval > best_eval_score:
+                best_eval_score = current_eval
+                best_actions = list(current_actions)
+                best_face_dmg = current_face_dmg
+                best_final_leader_hp = current_leader_hp
+                best_wards_cleared = wards_cleared
+                best_surviving_ours = [u.clone() for u in current_ours]
+                best_surviving_enemy = [e.clone() for e in current_enemy]
 
             # Pruning 1: Greedy completion when NO wards exist
             if wards_cleared:
-                # If no wards exist, all attackers with can_attack_leader should directly hit face!
+                # If no wards exist, all attackers with can_face_inherent should directly hit face!
                 # Remaining rush-only attackers can trade with remaining enemy followers or stop.
                 sim_actions = list(current_actions)
                 sim_ours = [u.clone() for u in current_ours]
@@ -355,7 +408,10 @@ class MemoryCombatPlanner:
                 sim_face_dmg = current_face_dmg
 
                 # 1. Face attackers hit face
-                face_attackers = [u for u in sim_ours if u.hp > 0 and u.attacks_left > 0 and u.can_attack_leader]
+                face_attackers = [
+                    u for u in sim_ours
+                    if u.hp > 0 and u.attacks_left > 0 and not u.has_cant_attack and u.can_face_inherent
+                ]
                 # Order face attackers from highest attack to lowest
                 face_attackers.sort(key=lambda u: u.atk, reverse=True)
 
@@ -365,6 +421,7 @@ class MemoryCombatPlanner:
                         sim_leader_hp -= dmg
                         sim_face_dmg += dmg
                         fa.attacks_left -= 1
+                        fa.has_attacked = True
                         sim_actions.append(
                             CombatAction(
                                 action_type="attack_leader",
@@ -380,18 +437,14 @@ class MemoryCombatPlanner:
                 # 2. Rush-only attackers (can't hit face) trade with alive enemy followers if beneficial
                 rush_attackers = [
                     u for u in sim_ours
-                    if u.hp > 0 and u.attacks_left > 0 and u.can_attack_field and not u.can_attack_leader
-                ]
-                alive_enemies = [
-                    e for e in sim_enemy
-                    if e.hp > 0 and not e.is_amulet and not e.has_cant_be_attacked
+                    if u.hp > 0 and u.attacks_left > 0 and not u.has_cant_attack and u.can_attack_field and not u.can_face_inherent
                 ]
 
                 for ra in rush_attackers:
                     while ra.attacks_left > 0 and ra.hp > 0:
                         alive_enemies = [
                             e for e in sim_enemy
-                            if e.hp > 0 and not e.is_amulet and not e.has_cant_be_attacked
+                            if e.hp > 0 and not e.is_amulet and not e.has_cant_be_attacked and not e.has_sneak
                         ]
                         if not alive_enemies:
                             break
@@ -426,29 +479,13 @@ class MemoryCombatPlanner:
 
             # Wards exist! Can any friendly attacker hit?
             if not avail_attackers:
-                # No more attackers
-                eval_score = cls._evaluate_attack_state(
-                    face_damage=current_face_dmg,
-                    leader_remaining_hp=current_leader_hp,
-                    wards_cleared=False,
-                    surviving_ours=current_ours,
-                    surviving_enemy=current_enemy,
-                )
-                if eval_score > best_eval_score:
-                    best_eval_score = eval_score
-                    best_actions = current_actions
-                    best_face_dmg = current_face_dmg
-                    best_final_leader_hp = current_leader_hp
-                    best_wards_cleared = False
-                    best_surviving_ours = current_ours
-                    best_surviving_enemy = current_enemy
                 return
 
             # Upper Bound Pruning:
             # Maximum potential face damage from this branch:
-            # sum of ATK of all remaining surviving followers that have can_attack_leader
+            # sum of ATK of all remaining surviving followers that have can_face_inherent
             potential_face_boost = sum(
-                max(0, u.atk) * u.attacks_left for u in current_ours if u.hp > 0 and u.can_attack_leader
+                max(0, u.atk) * u.attacks_left for u in current_ours if u.hp > 0 and u.can_face_inherent
             )
             # If even with all remaining face attackers hitting face we cannot beat best_face_dmg,
             # and wards_cleared is already achieved in best, prune!
@@ -516,6 +553,7 @@ class MemoryCombatPlanner:
     def _simulate_combat(cls, attacker: SimUnit, defender: SimUnit) -> CombatAction:
         """Simulates simultaneous combat between attacker and defender, mutating them in-place."""
         attacker.attacks_left -= 1
+        attacker.has_attacked = True
 
         # Attacker deals damage to defender
         dmg_to_def = 0
@@ -589,8 +627,8 @@ class MemoryCombatPlanner:
         enemy_alive_hp = sum(max(0, e.hp) for e in surviving_enemy if e.hp > 0)
 
         if is_lethal:
-            # Overkill damage bonus up to 10
-            return 1_000_000.0 + face_damage * 100.0 + ours_alive_hp
+            # Overkill damage bonus up to 30
+            return 1_000_000.0 + min(face_damage, 30) * 10.0 + ours_alive_hp
 
         score = (
             face_damage * 10_000.0
@@ -621,11 +659,21 @@ class MemoryCombatPlanner:
             surviving_enemy=surviving_enemy,
         )
 
+        is_lethal = (final_leader_hp <= 0)
+
         ep_cost = 0.0
-        if evo_type == "super":
-            ep_cost = 3.0
-        elif evo_type == "normal":
-            ep_cost = 1.0
+        if is_lethal:
+            # Conserve EP when lethal is reached!
+            # Never waste EP or SEP on overkill if lethal is already achieved without it!
+            if evo_type == "super":
+                ep_cost = 20_000.0
+            elif evo_type == "normal":
+                ep_cost = 10_000.0
+        else:
+            if evo_type == "super":
+                ep_cost = 3.0
+            elif evo_type == "normal":
+                ep_cost = 1.0
 
         # Penalize wasting evolution if it didn't do anything
         if evo_type is not None and not evo_utilized:
