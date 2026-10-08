@@ -7,7 +7,8 @@
 #>
 
 param(
-    [string]$DistDir = "dist\Svb_Byd_Deck_Auto"
+    [string]$DistDir = "dist\Svb_Byd_Deck_Auto",
+    [switch]$NoPause
 )
 
 # 设置控制台编码
@@ -32,12 +33,18 @@ Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
 # 检查项目虚拟环境及打包工具
-$pythonPath = ".venv\Scripts\python.exe"
-if (-not (Test-Path $pythonPath)) {
-    Write-Host "错误: 虚拟环境不存在 - $pythonPath" -ForegroundColor Red
-    Read-Host "按回车键退出..."
-    Pop-Location
-    exit 1
+if (Test-Path ".venv\Scripts\python.exe") {
+    $pythonPath = ".venv\Scripts\python.exe"
+} else {
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) {
+        $pythonPath = $pythonCmd.Source
+    } else {
+        Write-Host "错误: 虚拟环境不存在且系统路径未找到 python.exe" -ForegroundColor Red
+        if (-not $NoPause) { Read-Host "按回车键退出..." }
+        Pop-Location
+        exit 1
+    }
 }
 
 # 检查 PyInstaller，不依赖当前 PowerShell 是否已激活虚拟环境
@@ -51,7 +58,7 @@ try {
 }
 catch {
     Write-Host "错误: $_" -ForegroundColor Red
-    Read-Host "按回车键退出..."
+    if (-not $NoPause) { Read-Host "按回车键退出..." }
     Pop-Location
     exit 1
 }
@@ -68,7 +75,7 @@ try {
 }
 catch {
     Write-Host "错误: $_" -ForegroundColor Red
-    Read-Host "按回车键退出..."
+    if (-not $NoPause) { Read-Host "按回车键退出..." }
     Pop-Location
     exit 1
 }
@@ -83,6 +90,7 @@ $requiredDirs = @(
     "templates",
     "templates_global",
     "card_cost",
+    "tools\desktop_avatar",
     "说明文档（必看）"
 )
 
@@ -103,6 +111,12 @@ foreach ($dir in $requiredDirs) {
     else {
         Write-Host "警告: $dir 目录不存在" -ForegroundColor Yellow
     }
+}
+
+# 清理可能误入的本地日志、缓存及开发配置
+$junkPatterns = @("*.log", "round_stats_*.json", "auto_launch_cache.json", "consent.txt", "config.json")
+foreach ($junk in $junkPatterns) {
+    Get-ChildItem -LiteralPath $DistDir -Filter $junk -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force
 }
 
 Write-Host ""
@@ -146,4 +160,6 @@ Write-Host "  打包完成!" -ForegroundColor Green
 Write-Host "  可执行文件位置: $DistDir\Svb_Byd_Deck_Auto.exe" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Pop-Location
-Read-Host "按回车键退出..."
+if (-not $NoPause) {
+    Read-Host "按回车键退出..."
+}
